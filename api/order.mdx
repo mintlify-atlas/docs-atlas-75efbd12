@@ -1,0 +1,153 @@
+---
+title: 'Order'
+description: 'Represents a pending order created by Strategy.buy() or Strategy.sell().'
+sidebarTitle: 'Order'
+keywords: ['order', 'buy', 'sell', 'limit', 'stop', 'stop-loss', 'take-profit', 'contingent', 'cancel']
+---
+
+An `Order` is created by calling `Strategy.buy()` or `Strategy.sell()`. Pending orders are accessible via `Strategy.orders`. When an order is executed (filled), it produces a `Trade`.
+
+```python
+from backtesting import Strategy
+
+class MyStrategy(Strategy):
+    def next(self):
+        order = self.buy(size=10, sl=95.0, tp=115.0)
+```
+
+<Note>
+  All placed orders are [Good 'Til Canceled](https://www.investopedia.com/terms/g/gtc.asp) — they remain pending until filled or explicitly canceled.
+</Note>
+
+---
+
+## Properties
+
+<ResponseField name="size" type="float" required>
+  Order size in units. Negative values indicate a short order.
+
+  - A value between `0` and `1` (exclusive) is treated as a **fraction** of current available liquidity (cash plus `Position.pl` minus used margin).
+  - A value greater than or equal to `1` is an **absolute** number of units.
+
+  ```python
+  order = self.buy(size=0.5)   # 50% of available equity
+  order = self.buy(size=100)   # 100 units
+  print(order.size)            # e.g. 0.5 or 100
+  ```
+</ResponseField>
+
+<ResponseField name="limit" type="float | None">
+  Limit price for [limit orders](https://www.investopedia.com/terms/l/limitorder.asp). When set, the order fills only if the market reaches this price. `None` for [market orders](https://www.investopedia.com/terms/m/marketorder.asp), which fill at the next available price.
+</ResponseField>
+
+<ResponseField name="stop" type="float | None">
+  Stop price for [stop-limit or stop-market](https://www.investopedia.com/terms/s/stoporder.asp) orders. `None` if no stop was set, or if the stop price has already been triggered (in which case the order becomes a market or limit order).
+</ResponseField>
+
+<ResponseField name="sl" type="float | None">
+  Stop-loss price declared at order creation. If set, a contingent stop-market order is automatically placed on the resulting `Trade` once this order fills.
+
+  See also `Trade.sl` for modifying stop-loss on an active trade.
+</ResponseField>
+
+<ResponseField name="tp" type="float | None">
+  Take-profit price declared at order creation. If set, a contingent limit order is automatically placed on the resulting `Trade` once this order fills.
+
+  See also `Trade.tp` for modifying take-profit on an active trade.
+</ResponseField>
+
+<ResponseField name="tag" type="any">
+  Arbitrary value attached to the order for tracking purposes. The tag is inherited by the `Trade` that results from this order.
+
+  ```python
+  self.buy(tag='breakout')
+  # later, in closed_trades:
+  for trade in self.closed_trades:
+      if trade.tag == 'breakout':
+          ...
+  ```
+
+  See also `Trade.tag`.
+</ResponseField>
+
+<ResponseField name="is_long" type="bool">
+  `True` if the order is long (i.e. `size > 0`).
+</ResponseField>
+
+<ResponseField name="is_short" type="bool">
+  `True` if the order is short (i.e. `size < 0`).
+</ResponseField>
+
+<ResponseField name="is_contingent" type="bool">
+  `True` for [contingent](https://www.investopedia.com/terms/c/contingentorder.asp) orders — the [OCO](https://www.investopedia.com/terms/o/oco.asp) stop-loss and take-profit bracket orders that are automatically attached to an active trade.
+
+  Contingent orders are canceled automatically when their parent trade closes. You can modify them via `Trade.sl` and `Trade.tp`.
+</ResponseField>
+
+---
+
+## Methods
+
+### `Order.cancel()`
+
+```python
+def cancel() -> None
+```
+
+Remove this order from the pending queue. The order will not be filled.
+
+If this order is a contingent SL or TP bracket order attached to a parent trade, calling `cancel()` also removes that contingent order from the trade (setting `trade.sl` or `trade.tp` to `None`).
+
+```python
+def next(self):
+    # Cancel all non-contingent pending long orders
+    for order in self.orders:
+        if order.is_long and not order.is_contingent:
+            order.cancel()
+```
+
+---
+
+## Example
+
+The following example places a buy order with bracket SL/TP, then demonstrates how to inspect and cancel pending orders:
+
+```python
+from backtesting import Backtest, Strategy
+from backtesting.test import GOOG
+
+class OrderManagement(Strategy):
+    def init(self):
+        pass
+
+    def next(self):
+        price = self.data.Close[-1]
+
+        # Place a long order with stop-loss and take-profit
+        if not self.position and not self.orders:
+            self.buy(
+                size=10,
+                sl=price * 0.97,   # 3% below entry
+                tp=price * 1.06,   # 6% above entry
+                tag='entry-signal',
+            )
+
+        # Inspect pending orders
+        for order in self.orders:
+            print(
+                f"Order: size={order.size}, "
+                f"limit={order.limit}, "
+                f"stop={order.stop}, "
+                f"sl={order.sl}, "
+                f"tp={order.tp}, "
+                f"contingent={order.is_contingent}, "
+                f"tag={order.tag}"
+            )
+
+            # Cancel non-contingent orders if some condition is met
+            if not order.is_contingent and some_exit_condition:
+                order.cancel()
+
+bt = Backtest(GOOG, OrderManagement, cash=10_000, commission=0.002)
+stats = bt.run()
+```

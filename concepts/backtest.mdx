@@ -1,0 +1,317 @@
+---
+title: Backtest
+description: Configure and run simulations with the Backtest class, interpret the statistics it returns, and optimize strategy parameters.
+---
+
+The `Backtest` class is the simulation engine. You instantiate it with your data and strategy, call `run()` to simulate trading, and optionally call `optimize()` to find the best parameters.
+
+## Constructor
+
+```python
+from backtesting import Backtest
+
+bt = Backtest(
+    data,
+    strategy,
+    cash=10_000,
+    commission=.002,
+    exclusive_orders=True,
+)
+```
+
+### Parameters
+
+<ParamField path="data" type="pd.DataFrame" required>
+  A pandas DataFrame with columns `Open`, `High`, `Low`, `Close`, and optionally `Volume`. The index should be a `DatetimeIndex`. See [Data](/concepts/data) for details.
+</ParamField>
+
+<ParamField path="strategy" type="Type[Strategy]" required>
+  A `Strategy` **subclass** (not an instance). The engine instantiates it internally.
+</ParamField>
+
+<ParamField path="cash" type="float" default="10000">
+  Starting account balance in cash units.
+</ParamField>
+
+<ParamField path="spread" type="float" default="0.0">
+  Constant bid-ask spread as a fraction of price. For example, `0.0002` models a 0.2‰ forex spread. Applied once at trade entry.
+</ParamField>
+
+<ParamField path="commission" type="float | tuple[float, float] | Callable" default="0.0">
+  Broker commission. Applied at both entry and exit.
+
+  - **Float**: fraction of trade value. E.g. `0.002` for 0.2%.
+  - **Tuple `(fixed, relative)`**: fixed cash amount plus relative fraction. E.g. `(100, 0.01)` for $100 + 1%.
+  - **Callable `func(order_size, price) -> float`**: full custom commission model. Note that `order_size` is negative for short orders. Negative values model market-maker rebates.
+</ParamField>
+
+<ParamField path="margin" type="float" default="1.0">
+  Required margin ratio for leveraged accounts. Set to `1/leverage`. For example, `0.02` for 50:1 leverage. No distinction is made between initial and maintenance margin.
+</ParamField>
+
+<ParamField path="trade_on_close" type="bool" default="False">
+  If `True`, market orders fill at the **current bar's close** instead of the next bar's open.
+</ParamField>
+
+<ParamField path="hedging" type="bool" default="False">
+  If `True`, allows simultaneous long and short positions. If `False`, placing a trade in the opposite direction first closes existing trades in FIFO order.
+</ParamField>
+
+<ParamField path="exclusive_orders" type="bool" default="False">
+  If `True`, each new order automatically cancels pending orders and closes all open trades before opening the new one. Keeps at most one trade active at any time.
+</ParamField>
+
+<ParamField path="finalize_trades" type="bool" default="False">
+  If `True`, all trades still open at the end of the dataset are closed on the last bar and included in the statistics. By default, open trades are excluded from stats and a warning is issued.
+</ParamField>
+
+## Running a backtest
+
+Call `run()` to execute the simulation. Keyword arguments override strategy class variables for this run only.
+
+```python
+stats = bt.run()
+
+# Override strategy parameters for this run
+stats = bt.run(n1=5, n2=50)
+```
+
+`run()` returns a `pd.Series` with all performance statistics:
+
+```text
+Start                     2004-08-19 00:00:00
+End                       2013-03-01 00:00:00
+Duration                   3116 days 00:00:00
+Exposure Time [%]                    96.74115
+Equity Final [$]                     51422.99
+Equity Peak [$]                      75787.44
+Return [%]                           414.2299
+Buy & Hold Return [%]               703.45824
+Return (Ann.) [%]                    21.18026
+Volatility (Ann.) [%]                36.49391
+CAGR [%]                             14.15984
+Sharpe Ratio                          0.58038
+Sortino Ratio                         1.08479
+Calmar Ratio                          0.44144
+Alpha [%]                           394.37391
+Beta                                  0.03803
+Max. Drawdown [%]                   -47.98013
+Avg. Drawdown [%]                    -5.92585
+Max. Drawdown Duration      584 days 00:00:00
+Avg. Drawdown Duration       41 days 00:00:00
+# Trades                                   66
+Win Rate [%]                          46.9697
+Best Trade [%]                       53.59595
+Worst Trade [%]                     -18.39887
+Avg. Trade [%]                        2.53172
+Max. Trade Duration         183 days 00:00:00
+Avg. Trade Duration          46 days 00:00:00
+Profit Factor                         2.16795
+Expectancy [%]                        3.27481
+SQN                                   1.07662
+Kelly Criterion                       0.15187
+_strategy                            SmaCross
+_equity_curve                           Eq...
+_trades                       Size  EntryB...
+dtype: object
+```
+
+The series also contains three private keys with raw data:
+
+| Key | Content |
+|-----|---------|
+| `_strategy` | The strategy instance that was run |
+| `_equity_curve` | DataFrame of equity, drawdown percent, and drawdown duration over time |
+| `_trades` | DataFrame of all closed trades with size, entry/exit prices, P&L, and commissions |
+
+```python
+# Inspect all closed trades
+print(stats['_trades'])
+
+# Plot equity curve
+stats['_equity_curve']['Equity'].plot()
+```
+
+<Warning>
+  Results depend on the indicator warm-up period. If you use a 200-bar SMA, the simulation begins on bar 201. Strategies with longer indicators have fewer bars to trade on, which affects statistics like return and trade count.
+</Warning>
+
+## Optimizing parameters
+
+`optimize()` searches for the strategy parameter combination that maximizes a given metric.
+
+```python
+stats, heatmap = bt.optimize(
+    n1=range(5, 30, 5),
+    n2=range(10, 70, 10),
+    constraint=lambda p: p.n1 < p.n2,
+    maximize='SQN',
+    return_heatmap=True,
+)
+```
+
+### Parameters
+
+<ParamField path="**kwargs" required>
+  Strategy parameter names mapped to sequences of candidate values. For example, `n1=[5, 10, 15]` tests three values for the `n1` parameter.
+</ParamField>
+
+<ParamField path="maximize" type="str | Callable" default="'SQN'">
+  The metric to maximize. Either a string key from the `run()` result Series (e.g. `'SQN'`, `'Sharpe Ratio'`, `'Return [%]'`) or a callable that accepts the result Series and returns a number — the higher the better.
+</ParamField>
+
+<ParamField path="method" type="str" default="'grid'">
+  Optimization method. `'grid'` performs exhaustive search over all parameter combinations. `'sambo'` uses model-based optimization, which requires the `sambo` package and is more efficient when the parameter space is large.
+</ParamField>
+
+<ParamField path="max_tries" type="int | float | None">
+  Maximum number of strategy runs. For `method='grid'`, triggers randomized grid search. A float between 0 and 1 sets it as a fraction of the full grid. Defaults to exhaustive for `'grid'` and 200 for `'sambo'`.
+</ParamField>
+
+<ParamField path="constraint" type="Callable[[dict], bool] | None">
+  A function that receives a dict-like object of parameter values and returns `True` if the combination is admissible. Use this to skip invalid combinations.
+
+  ```python
+  constraint=lambda p: p.n1 < p.n2
+  ```
+</ParamField>
+
+<ParamField path="return_heatmap" type="bool" default="False">
+  If `True`, return a tuple `(stats, heatmap)`. The heatmap is a `pd.Series` with a MultiIndex of all tested parameter combinations and their objective values. Pass it to `backtesting.lib.plot_heatmaps()` to visualize.
+</ParamField>
+
+<ParamField path="random_state" type="int | None">
+  Integer seed for reproducible randomized optimization results.
+</ParamField>
+
+`optimize()` returns the `pd.Series` result of the best run found. With `return_heatmap=True`, it returns a tuple.
+
+## Plotting results
+
+`plot()` opens an interactive Bokeh chart in the browser.
+
+```python
+bt.plot()
+```
+
+The chart shows the price candlesticks, declared indicators, trade entry/exit markers, and the equity curve with drawdown periods highlighted.
+
+### Key parameters
+
+<ParamField path="results" type="pd.Series | None">
+  A specific result Series from `run()` or `optimize()`. If not provided, the last `run()` result is used.
+</ParamField>
+
+<ParamField path="filename" type="str | None">
+  Path to save the HTML file. Defaults to a strategy-specific name in the current directory.
+</ParamField>
+
+<ParamField path="plot_equity" type="bool" default="True">
+  Include an equity curve section.
+</ParamField>
+
+<ParamField path="plot_drawdown" type="bool" default="False">
+  Include a separate drawdown section.
+</ParamField>
+
+<ParamField path="open_browser" type="bool" default="True">
+  Open the chart in the default browser after saving.
+</ParamField>
+
+<ParamField path="superimpose" type="bool | str" default="True">
+  Superimpose a higher-timeframe candlestick chart. Pass a Pandas offset string like `'1W'` to control the timeframe.
+</ParamField>
+
+## Complete example
+
+```python
+from backtesting import Backtest, Strategy
+from backtesting.lib import crossover
+from backtesting.test import SMA, GOOG
+
+
+class SmaCross(Strategy):
+    n1 = 10
+    n2 = 20
+
+    def init(self):
+        price = self.data.Close
+        self.ma1 = self.I(SMA, price, self.n1)
+        self.ma2 = self.I(SMA, price, self.n2)
+
+    def next(self):
+        if crossover(self.ma1, self.ma2):
+            self.buy()
+        elif crossover(self.ma2, self.ma1):
+            self.sell()
+
+
+# 1. Construct
+bt = Backtest(GOOG, SmaCross, cash=10_000, commission=.002)
+
+# 2. Run
+stats = bt.run()
+print(stats['Return [%]'])
+print(stats['Sharpe Ratio'])
+print(stats['# Trades'])
+
+# 3. Inspect trades
+trades_df = stats['_trades']
+print(trades_df.head())
+
+# 4. Optimize
+best_stats, heatmap = bt.optimize(
+    n1=range(5, 30, 5),
+    n2=range(10, 70, 10),
+    constraint=lambda p: p.n1 < p.n2,
+    return_heatmap=True,
+)
+
+# 5. Plot
+bt.plot(results=best_stats)
+```
+
+## Commission types
+
+<Tabs>
+  <Tab title="Relative (fraction)">
+    ```python
+    # 0.2% of trade value, applied at entry and exit
+    bt = Backtest(data, MyStrategy, commission=0.002)
+    ```
+  </Tab>
+  <Tab title="Fixed + relative">
+    ```python
+    # $5 flat fee plus 0.1%
+    bt = Backtest(data, MyStrategy, commission=(5, 0.001))
+    ```
+  </Tab>
+  <Tab title="Custom callable">
+    ```python
+    def my_commission(order_size, price):
+        # order_size is negative for short orders
+        return max(1.0, abs(order_size) * price * 0.001)
+
+    bt = Backtest(data, MyStrategy, commission=my_commission)
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  Before v0.4.0, commission was applied only once (like `spread` is now). If you need the old behavior, set `spread` instead of `commission`.
+</Note>
+
+## Fractional trading
+
+The default `Backtest` class requires whole-unit position sizes. If you want to trade fractional units (e.g. Bitcoin), use `backtesting.lib.FractionalBacktest`:
+
+```python
+from backtesting.lib import FractionalBacktest
+
+bt = FractionalBacktest(btc_data, MyStrategy, cash=10_000)
+stats = bt.run()
+```
+
+<Tip>
+  For assets like Bitcoin with high per-unit prices, you can also work around the whole-unit requirement by converting your data to micro-units (e.g. µBTC or satoshis) and increasing initial cash accordingly.
+</Tip>

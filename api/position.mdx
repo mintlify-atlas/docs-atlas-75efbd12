@@ -1,0 +1,146 @@
+---
+title: 'Position'
+description: 'Represents the aggregate current position across all active trades.'
+sidebarTitle: 'Position'
+keywords: ['position', 'long', 'short', 'flat', 'pl', 'profit', 'loss', 'close', 'size']
+---
+
+The `Position` object represents the aggregate of all currently active trades. Access it via `Strategy.position` inside `next()`.
+
+```python
+from backtesting import Strategy
+
+class MyStrategy(Strategy):
+    def next(self):
+        if self.position:
+            print(self.position.size, self.position.pl)
+```
+
+`Position` evaluates to `False` in boolean context when there are no active trades (flat), and `True` when any trade is open.
+
+```python
+if self.position:        # True if long or short
+    ...
+if not self.position:   # True if flat
+    ...
+```
+
+---
+
+## Properties
+
+<ResponseField name="size" type="float">
+  Net position size: the sum of all active trade sizes.
+
+  - Positive when net long.
+  - Negative when net short.
+  - `0.0` when flat (no open trades).
+
+  ```python
+  print(self.position.size)   # e.g. 15.0 (long) or -10.0 (short)
+  ```
+
+  <Note>
+    When `hedging=True` is set on `Backtest`, long and short trades coexist. `position.size` is their net sum and may not reflect total exposure.
+  </Note>
+</ResponseField>
+
+<ResponseField name="pl" type="float">
+  Total unrealized profit (positive) or loss (negative) of the current position in cash units. Equivalent to the sum of `trade.pl` across all active trades.
+
+  ```python
+  if self.position.pl < -500:
+      self.position.close()   # cut losses
+  ```
+</ResponseField>
+
+<ResponseField name="pl_pct" type="float">
+  P&L as a percentage relative to total invested value (sum of `entry_price × abs(size)` for each active trade).
+
+  Returns `0` when there are no open trades.
+</ResponseField>
+
+<ResponseField name="is_long" type="bool">
+  `True` when the net position is long (i.e. `size > 0`).
+</ResponseField>
+
+<ResponseField name="is_short" type="bool">
+  `True` when the net position is short (i.e. `size < 0`).
+</ResponseField>
+
+---
+
+## Methods
+
+### `Position.close()`
+
+```python
+def close(portion: float = 1.0) -> None
+```
+
+Close `portion` of the current position by calling `Trade.close(portion)` on every active trade.
+
+<ParamField path="portion" type="float" default="1.0">
+  Fraction of each trade to close. Must satisfy `0 < portion <= 1`.
+
+  - `1.0` (default) closes all active trades entirely.
+  - `0.5` closes 50% of each trade.
+
+  ```python
+  self.position.close()      # exit the entire position
+  self.position.close(0.5)   # halve the position
+  ```
+</ParamField>
+
+<Note>
+  `position.close()` closes each individual trade proportionally. If you need finer control — for example, closing only long trades — iterate over `self.trades` and call `trade.close()` selectively.
+</Note>
+
+---
+
+## Example
+
+The following example uses `Position` to guard entries, monitor P&L, and exit on a signal or drawdown threshold:
+
+```python
+from backtesting import Backtest, Strategy
+from backtesting.lib import crossover
+from backtesting.test import GOOG
+import talib
+
+class PositionExample(Strategy):
+    sma_period = 20
+    max_loss = -300   # max acceptable loss in cash
+
+    def init(self):
+        self.sma = self.I(talib.SMA, self.data.Close, self.sma_period)
+
+    def next(self):
+        # Only enter when flat
+        if not self.position:
+            if crossover(self.data.Close, self.sma):
+                self.buy()
+        else:
+            # Report current state
+            print(
+                f"Position size: {self.position.size}, "
+                f"P&L: {self.position.pl:.2f} "
+                f"({self.position.pl_pct:.2%})"
+            )
+
+            # Exit on signal reversal
+            if crossover(self.sma, self.data.Close):
+                self.position.close()
+
+            # Emergency exit if loss exceeds threshold
+            elif self.position.pl < self.max_loss:
+                self.position.close()
+
+            # Partial close: lock in half profits when up 5%
+            elif self.position.pl_pct >= 0.05:
+                self.position.close(0.5)
+
+bt = Backtest(GOOG, PositionExample, cash=10_000, commission=0.002)
+stats = bt.run()
+print(stats[['Return [%]', 'Win Rate [%]', '# Trades']])
+```

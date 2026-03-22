@@ -1,0 +1,362 @@
+---
+title: Strategy
+description: Learn how to define trading strategies by subclassing Strategy, declaring indicators in init(), and making trading decisions bar-by-bar in next().
+---
+
+The `Strategy` class is the abstract base class for every trading strategy in backtesting.py. You extend it, declare your indicators, and implement your decision logic. The engine calls your methods at the right time during the simulation.
+
+## Overview
+
+Every strategy must subclass `Strategy` and override exactly two abstract methods:
+
+| Method | When called | What to do |
+|--------|-------------|------------|
+| `init()` | Once, before simulation starts | Declare indicators, precompute arrays |
+| `next()` | Once per bar (candle) | Read data, place or close orders |
+
+```python
+from backtesting import Strategy
+
+class MyStrategy(Strategy):
+    def init(self):
+        # Precompute indicators here
+        pass
+
+    def next(self):
+        # Trading logic here
+        pass
+```
+
+## Strategy parameters
+
+Define tunable parameters as class-level variables. The engine injects the correct values when running or optimizing.
+
+```python
+class SmaCross(Strategy):
+    n1 = 10   # fast SMA period
+    n2 = 20   # slow SMA period
+
+    def init(self):
+        price = self.data.Close
+        self.ma1 = self.I(SMA, price, self.n1)
+        self.ma2 = self.I(SMA, price, self.n2)
+
+    def next(self):
+        if crossover(self.ma1, self.ma2):
+            self.buy()
+        elif crossover(self.ma2, self.ma1):
+            self.sell()
+```
+
+You can override parameters at run time:
+
+```python
+bt.run(n1=5, n2=50)
+```
+
+Or sweep them during optimization:
+
+```python
+bt.optimize(n1=[5, 10, 15], n2=[20, 40, 60])
+```
+
+## The `init()` method
+
+`init()` is called once before the simulation begins. Use it to precompute anything that can be calculated in a vectorized fashion — primarily indicators.
+
+<Steps>
+  <Step title="Call super().init() if composing strategies">
+    If your strategy extends a composable base from `backtesting.lib` (such as `TrailingStrategy`), call `super().init()` first so the parent class can set up its own indicators.
+
+    ```python
+    def init(self):
+        super().init()
+        self.sma = self.I(SMA, self.data.Close, 20)
+    ```
+  </Step>
+
+  <Step title="Declare indicators with self.I()">
+    Wrap every indicator function with `self.I()`. This tells the engine to gradually reveal the indicator values bar-by-bar during the simulation, matching `self.data` behavior.
+
+    ```python
+    def init(self):
+        self.sma = self.I(SMA, self.data.Close, 20)
+    ```
+
+    In `init()`, `self.data` arrays are available at **full length**, which is what indicator libraries need to compute the full result array.
+  </Step>
+</Steps>
+
+## The `next()` method
+
+`next()` is called once for each bar (candle) in the dataset, after the indicator warm-up period. It receives no arguments — all data is accessed through `self.data` and your declared indicator attributes.
+
+```python
+def next(self):
+    if crossover(self.ma1, self.ma2):
+        self.buy()
+    elif crossover(self.ma2, self.ma1):
+        self.position.close()
+```
+
+At each call to `next()`, `self.data` arrays are sliced to only the current bar and all prior bars. The last element (`[-1]`) is always the most recent (current) value.
+
+```python
+def next(self):
+    current_close = self.data.Close[-1]
+    previous_close = self.data.Close[-2]
+```
+
+<Note>
+  If you extend a composable strategy from `backtesting.lib`, call `super().next()` to let the parent class run its own logic.
+</Note>
+
+## Declaring indicators: `self.I()`
+
+`self.I(func, *args, **kwargs)` wraps an indicator function so the framework can plot it and reveal its values gradually bar-by-bar.
+
+```python
+self.sma = self.I(SMA, self.data.Close, 20)
+```
+
+`func` is any callable that returns a NumPy array (or tuple of arrays) of the same length as `self.data.Close`. All positional and keyword arguments after the function are forwarded to it.
+
+### Parameters
+
+<ParamField path="func" type="Callable" required>
+  A function that accepts the data arguments and returns a NumPy array of the same length as the input data. For example, `ta.SMA`, `ta.MACD`, or your own function.
+</ParamField>
+
+<ParamField path="*args">
+  Positional arguments forwarded to `func`. Typically the price series and any window size.
+</ParamField>
+
+<ParamField path="name" type="str | list[str]">
+  Label shown in the plot legend. If `func` returns multiple arrays (e.g. MACD), pass a list of strings. Defaults to the function name with arguments.
+</ParamField>
+
+<ParamField path="plot" type="bool" default="True">
+  Whether to include this indicator in the plot.
+</ParamField>
+
+<ParamField path="overlay" type="bool">
+  If `True`, draws the indicator on top of the price chart (suitable for moving averages). If `False`, draws it in a separate panel below. Defaults to a heuristic based on value range.
+</ParamField>
+
+<ParamField path="color" type="str">
+  A hex RGB color (`"#1a7f4b"`) or X11 color name (`"red"`). Defaults to the next available color in the palette.
+</ParamField>
+
+<ParamField path="scatter" type="bool" default="False">
+  If `True`, plots the indicator as circles instead of a connected line.
+</ParamField>
+
+### Examples
+
+<Tabs>
+  <Tab title="Simple moving average">
+    ```python
+    def init(self):
+        self.sma = self.I(SMA, self.data.Close, 20)
+    ```
+  </Tab>
+  <Tab title="Named indicator">
+    ```python
+    def init(self):
+        self.sma = self.I(SMA, self.data.Close, 20, name='SMA(20)')
+    ```
+  </Tab>
+  <Tab title="Overlay vs panel">
+    ```python
+    def init(self):
+        # Overlay on price chart
+        self.ema = self.I(EMA, self.data.Close, 50, overlay=True)
+        # Separate panel below
+        self.rsi = self.I(RSI, self.data.Close, 14, overlay=False)
+    ```
+  </Tab>
+  <Tab title="Custom function">
+    ```python
+    def init(self):
+        def volatility(close, n):
+            return pd.Series(close).rolling(n).std().values
+
+        self.vol = self.I(volatility, self.data.Close, 20)
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Rolling indicators front-pad warm-up values with NaN. The backtest **automatically skips all bars until every declared indicator has a non-NaN value**. For example, if you declare a 200-bar SMA, the simulation begins on bar 201. This affects total trade count and return figures.
+</Warning>
+
+## Strategy properties
+
+The following attributes are available inside both `init()` and `next()`:
+
+### `self.data`
+
+The price data, as a custom `_Data` structure with `Open`, `High`, `Low`, `Close`, and `Volume` arrays. In `init()`, the full array is available. In `next()`, only the current bar and all prior bars are visible.
+
+```python
+def next(self):
+    close = self.data.Close[-1]   # current bar's close
+    volume = self.data.Volume[-1] # current bar's volume
+```
+
+See [Data](/concepts/data) for full documentation.
+
+### `self.equity`
+
+Current account equity: cash plus the market value of all open positions.
+
+```python
+def next(self):
+    if self.equity < 5000:
+        self.position.close()  # close everything if equity too low
+```
+
+### `self.position`
+
+The current aggregate position. See [Position](/concepts/orders-trades-positions#position).
+
+```python
+def next(self):
+    if self.position.is_long:
+        # already long, maybe trail the stop
+        pass
+```
+
+### `self.orders`
+
+A tuple of pending `Order` objects waiting to be filled. See [Order](/concepts/orders-trades-positions#order).
+
+```python
+def next(self):
+    for order in self.orders:
+        if order.is_long:
+            order.cancel()
+```
+
+### `self.trades`
+
+A tuple of currently active `Trade` objects. See [Trade](/concepts/orders-trades-positions#trade).
+
+```python
+def next(self):
+    for trade in self.trades:
+        if trade.pl_pct > 0.05:  # 5% profit
+            trade.close()
+```
+
+### `self.closed_trades`
+
+A tuple of all settled `Trade` objects since the start of the backtest.
+
+```python
+def next(self):
+    win_count = sum(1 for t in self.closed_trades if t.pl > 0)
+```
+
+## Placing orders
+
+### `self.buy()`
+
+Place a long order and return the `Order` object.
+
+```python
+order = self.buy(size=0.1, sl=entry * 0.99, tp=entry * 1.02)
+```
+
+### `self.sell()`
+
+Place a short order and return the `Order` object.
+
+```python
+order = self.sell(size=100, limit=self.data.Close[-1] * 1.005)
+```
+
+Both methods share the same parameters:
+
+<ParamField path="size" type="float" default="~1.0 (full equity)">
+  Order size. If between 0 and 1 (exclusive), interpreted as a fraction of available equity. If 1 or greater, interpreted as an absolute number of units. Defaults to nearly the full available equity.
+</ParamField>
+
+<ParamField path="limit" type="float | None">
+  Limit price. If set, creates a limit order that fills when the market reaches this price. For long orders, fills when price falls to or below this value. For short orders, fills when price rises to or above it.
+</ParamField>
+
+<ParamField path="stop" type="float | None">
+  Stop price that activates the order. Once hit, the order becomes a market order (stop-market) or limit order (stop-limit, if `limit` is also set).
+</ParamField>
+
+<ParamField path="sl" type="float | None">
+  Stop-loss price. When the order fills, a contingent stop-market order is automatically placed at this price to close the resulting trade.
+</ParamField>
+
+<ParamField path="tp" type="float | None">
+  Take-profit price. When the order fills, a contingent limit order is automatically placed at this price to close the resulting trade.
+</ParamField>
+
+<ParamField path="tag" type="any">
+  An arbitrary value attached to the order and the resulting trade, useful for tracking or conditional logic.
+</ParamField>
+
+<Note>
+  Unless `trade_on_close=True`, market orders fill on the **next bar's open**. Limit and stop orders fill when their price condition is met during a subsequent bar.
+</Note>
+
+## Closing positions
+
+To exit a trade, use `Trade.close()` or `Position.close()` rather than placing a counter order:
+
+```python
+def next(self):
+    # Close the whole position
+    self.position.close()
+
+    # Close half the position
+    self.position.close(0.5)
+
+    # Close a specific trade
+    for trade in self.trades:
+        if trade.pl_pct < -0.02:
+            trade.close()
+```
+
+## Complete working example
+
+Here is a complete RSI mean-reversion strategy using real source patterns:
+
+```python
+import pandas_ta as ta
+from backtesting import Backtest, Strategy
+from backtesting.test import GOOG
+
+
+class RsiStrategy(Strategy):
+    rsi_period = 14
+    rsi_upper = 70
+    rsi_lower = 30
+
+    def init(self):
+        close = self.data.Close
+        self.rsi = self.I(
+            lambda c, n: ta.rsi(pd.Series(c), n).values,
+            close,
+            self.rsi_period,
+            name='RSI',
+            overlay=False,
+        )
+
+    def next(self):
+        if self.rsi[-1] < self.rsi_lower and not self.position:
+            self.buy()
+        elif self.rsi[-1] > self.rsi_upper and self.position.is_long:
+            self.position.close()
+
+
+bt = Backtest(GOOG, RsiStrategy, cash=10_000, commission=.002)
+stats = bt.run()
+print(stats)
+```

@@ -1,0 +1,253 @@
+---
+title: Trading with Machine Learning
+description: Integrate scikit-learn models and other ML frameworks into backtesting.py strategies using precomputed predictions and SignalStrategy.
+---
+
+backtesting.py is model-agnostic — you can integrate any machine learning framework by following a simple pattern: **precompute predictions in `init()`, consume them in `next()`**. This keeps the expensive model training or inference vectorized and avoids redundant computation on every bar.
+
+## Core pattern
+
+<Steps>
+  <Step title="Prepare features outside the strategy">
+    Build your feature matrix `X` and target variable `y` from the OHLCV data (and any additional columns you add to it). This can be done before passing data to `Backtest`.
+  </Step>
+  <Step title="Train or load your model in `init()`">
+    The full dataset is available in `init()`. Train on a training slice, or load pre-trained model weights.
+  </Step>
+  <Step title="Store predictions as an indicator">
+    Use `self.I(lambda: predictions, name='forecast')` to register the prediction array as a managed indicator. This makes it visible in the plot and ensures it is sliced correctly in `next()`.
+  </Step>
+  <Step title="Trade on predictions in `next()`">
+    Read the current bar's prediction with `self.forecasts[-1]` and place orders accordingly.
+  </Step>
+</Steps>
+
+## Feature engineering
+
+Below we build a design matrix from price-derived features and common technical indicators for EUR/USD hourly data:
+
+```python
+from backtesting.test import EURUSD, SMA
+import numpy as np
+
+data = EURUSD.copy()
+
+
+def BBANDS(data, n_lookback, n_std):
+    """Bollinger bands: returns (upper, lower)."""
+    hlc3 = (data.High + data.Low + data.Close) / 3
+    mean, std = hlc3.rolling(n_lookback).mean(), hlc3.rolling(n_lookback).std()
+    return mean + n_std * std, mean - n_std * std
+
+
+close   = data.Close.values
+sma10   = SMA(data.Close, 10)
+sma20   = SMA(data.Close, 20)
+sma50   = SMA(data.Close, 50)
+sma100  = SMA(data.Close, 100)
+upper, lower = BBANDS(data, 20, 2)
+
+# Price-derived features
+data['X_SMA10']       = (close - sma10)  / close
+data['X_SMA20']       = (close - sma20)  / close
+data['X_SMA50']       = (close - sma50)  / close
+data['X_SMA100']      = (close - sma100) / close
+data['X_DELTA_SMA10'] = (sma10 - sma20)  / close
+data['X_DELTA_SMA20'] = (sma20 - sma50)  / close
+data['X_DELTA_SMA50'] = (sma50 - sma100) / close
+
+# Indicator features
+data['X_MOM']      = data.Close.pct_change(periods=2)
+data['X_BB_upper'] = (upper - close) / close
+data['X_BB_lower'] = (lower - close) / close
+data['X_BB_width'] = (upper - lower) / close
+
+# Datetime features
+data['X_day']  = data.index.dayofweek
+data['X_hour'] = data.index.hour
+
+data = data.dropna().astype(float)
+```
+
+## Helper functions
+
+```python
+def get_X(data):
+    """Return feature matrix: all columns prefixed with 'X_'."""
+    return data.filter(like='X').values
+
+
+def get_y(data):
+    """Return target: +1 (up), -1 (down), 0 (flat) after ~2 days."""
+    y = data.Close.pct_change(48).shift(-48)  # 48-bar forward return
+    y[y.between(-.004, .004)] = 0             # flat if within ±0.4%
+    y[y > 0] = 1
+    y[y < 0] = -1
+    return y
+
+
+def get_clean_Xy(df):
+    """Return (X, y) with NaN rows removed."""
+    X = get_X(df)
+    y = get_y(df).values
+    mask = ~np.isnan(y)
+    return X[mask], y[mask]
+```
+
+## Strategy: train once, predict on each bar
+
+```python
+from backtesting import Backtest, Strategy
+from sklearn.neighbors import KNeighborsClassifier
+
+N_TRAIN = 400
+
+
+class MLTrainOnceStrategy(Strategy):
+    price_delta = .004  # 0.4% TP/SL offset
+
+    def init(self):
+        # Instantiate and train the model on the first N_TRAIN bars
+        self.clf = KNeighborsClassifier(7)
+        df = self.data.df.iloc[:N_TRAIN]
+        X, y = get_clean_Xy(df)
+        self.clf.fit(X, y)
+
+        # Register true labels as a plotted indicator for inspection
+        self.I(get_y, self.data.df, name='y_true')
+
+        # Pre-allocate a NaN forecast array — values filled in next()
+        self.forecasts = self.I(
+            lambda: np.repeat(np.nan, len(self.data)),
+            name='forecast'
+        )
+
+    def next(self):
+        # Skip the in-sample training period
+        if len(self.data) < N_TRAIN:
+            return
+
+        high, low, close = self.data.High, self.data.Low, self.data.Close
+
+        # Predict from the most recent bar's features
+        X = get_X(self.data.df.iloc[-1:])
+        forecast = self.clf.predict(X)[0]
+
+        # Write current bar's forecast back into the indicator array
+        self.forecasts[-1] = forecast
+
+        upper = close[-1] * (1 + self.price_delta)
+        lower = close[-1] * (1 - self.price_delta)
+
+        if forecast == 1 and not self.position.is_long:
+            self.buy(size=.2, tp=upper, sl=lower)
+        elif forecast == -1 and not self.position.is_short:
+            self.sell(size=.2, tp=lower, sl=upper)
+
+        # Tighten stop-loss on trades open for more than two days
+        current_time = self.data.index[-1]
+        for trade in self.trades:
+            if current_time - trade.entry_time > pd.Timedelta('2 days'):
+                if trade.is_long:
+                    trade.sl = max(trade.sl, low[-1])
+                else:
+                    trade.sl = min(trade.sl, high[-1])
+
+
+bt = Backtest(data, MLTrainOnceStrategy, commission=.0002, margin=.05)
+stats = bt.run()
+bt.plot()
+```
+
+## Walk-forward (rolling) retraining
+
+For a more realistic simulation, retrain the model periodically on a rolling window:
+
+```python
+class MLWalkForwardStrategy(MLTrainOnceStrategy):
+    def next(self):
+        if len(self.data) < N_TRAIN:
+            return
+
+        # Retrain every 20 bars on the most recent N_TRAIN rows
+        if len(self.data) % 20 == 0:
+            df = self.data.df[-N_TRAIN:]
+            X, y = get_clean_Xy(df)
+            self.clf.fit(X, y)
+
+        super().next()
+
+
+bt = Backtest(data, MLWalkForwardStrategy, commission=.0002, margin=.05)
+bt.run()
+```
+
+<Tip>
+  Retraining every bar is usually unnecessary and slow. Retraining every 20 bars (as above) loses very little signal while providing a significant speed-up, since 20 ≪ N_TRAIN.
+</Tip>
+
+## Using `SignalStrategy` with a precomputed signal
+
+If your model produces a full signal array up-front (e.g. from a vectorized model), `SignalStrategy` from `backtesting.lib` provides the simplest integration:
+
+```python
+import numpy as np
+import pandas as pd
+from backtesting.lib import SignalStrategy, TrailingStrategy
+from backtesting.test import SMA
+
+
+class MLSignalStrategy(SignalStrategy, TrailingStrategy):
+    n1 = 10
+    n2 = 25
+
+    def init(self):
+        super().init()
+
+        # Compute moving averages vectorially
+        sma1 = self.I(SMA, self.data.Close, self.n1)
+        sma2 = self.I(SMA, self.data.Close, self.n2)
+
+        # Signal: +1 when sma1 crosses above sma2, else 0
+        signal = (pd.Series(sma1) > sma2).astype(int).diff().fillna(0)
+        signal = signal.replace(-1, 0)  # long-only
+        entry_size = signal * .95       # use 95% of equity per order
+
+        # Pass the full signal array to SignalStrategy
+        self.set_signal(entry_size=entry_size)
+
+        # Optional: add trailing stop-loss
+        self.set_trailing_sl(2)
+```
+
+`SignalStrategy.set_signal(entry_size, exit_portion=None)` interprets:
+- **Positive** values in `entry_size` → buy
+- **Negative** values → sell
+- **Zero** → do nothing
+
+## Monte Carlo stress testing with `random_ohlc_data()`
+
+To test strategy robustness, run it against randomly shuffled OHLC data that preserves the statistical properties of the original:
+
+```python
+from backtesting.lib import random_ohlc_data
+from backtesting.test import EURUSD
+
+bt = Backtest(EURUSD, MLTrainOnceStrategy, commission=.0002, margin=.05)
+
+# Run on 20 randomized variants of the original data
+results = []
+for random_data in zip(range(20), random_ohlc_data(EURUSD, random_state=42)):
+    _, df = random_data
+    result = Backtest(df, MLTrainOnceStrategy, commission=.0002, margin=.05).run()
+    results.append(result['Equity Final [$]'])
+
+import pandas as pd
+print(pd.Series(results).describe())
+```
+
+`random_ohlc_data()` is a generator — call `next()` on it to obtain each new synthetic dataset. The `frac` parameter controls oversampling (default `1.0`; values above 1 produce longer synthetic series).
+
+<Warning>
+  Machine learning models trained and evaluated on the same in-sample data will appear profitable due to overfitting. Always separate your data into training and test sets, and validate your strategy on truly unseen data before drawing conclusions.
+</Warning>

@@ -1,0 +1,245 @@
+---
+title: Declaring Indicators
+description: Learn how to declare and configure technical indicators inside your backtesting.py strategies using self.I().
+---
+
+Indicators in backtesting.py are declared inside `Strategy.init()` by wrapping a function with `self.I()`. This ensures they are computed once up-front in vectorized form, automatically plotted, and gradually revealed to `next()` in a look-ahead-bias-free manner.
+
+## The `self.I()` method
+
+```python
+self.I(func, *args, name=None, plot=True, overlay=None, color=None, scatter=False, **kwargs)
+```
+
+`self.I()` calls `func(*args, **kwargs)` immediately and wraps the resulting array as a managed indicator. The return value is a NumPy array that is sliced progressively during `next()`, so `indicator[-1]` is always the current bar's value.
+
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `func` | required | Callable that returns an array (or tuple of arrays) of the same length as `data` |
+| `*args` | — | Positional arguments forwarded to `func` |
+| `name` | `None` | Legend label. Auto-generated from `func` name and args if omitted. For multi-array indicators, pass a list of strings. |
+| `plot` | `True` | Whether to include this indicator in `Backtest.plot()` output |
+| `overlay` | `None` | `True` = plot on top of price candles; `False` = plot in a separate panel below. Auto-detected by default. |
+| `color` | `None` | Hex RGB string (e.g. `'#FF0000'`) or X11 color name. Next available color assigned by default. |
+| `scatter` | `False` | `True` = render as circle markers instead of a continuous line |
+| `**kwargs` | — | Additional keyword arguments forwarded to `func` |
+
+## Simple SMA example
+
+The most straightforward indicator declaration uses a plain function or lambda:
+
+```python
+import pandas as pd
+from backtesting import Strategy
+
+def SMA(values, n):
+    """Simple moving average of `values` over `n` bars."""
+    return pd.Series(values).rolling(n).mean()
+
+class SmaCross(Strategy):
+    n1 = 10
+    n2 = 20
+
+    def init(self):
+        # Wrap SMA in self.I — result is a NumPy array
+        self.sma1 = self.I(SMA, self.data.Close, self.n1)
+        self.sma2 = self.I(SMA, self.data.Close, self.n2)
+
+    def next(self):
+        if self.sma1[-1] > self.sma2[-1]:
+            self.buy()
+```
+
+You can also use a lambda for one-liners:
+
+```python
+def init(self):
+    self.sma = self.I(lambda x, n: pd.Series(x).rolling(n).mean(),
+                      self.data.Close, 20, name='SMA(20)')
+```
+
+<Note>
+  Always declare indicators in `init()`, not in `next()`. Declaring them in `init()` computes them once over the full dataset before the simulation starts, which is both faster and correct.
+</Note>
+
+## Using TA-Lib and other libraries
+
+backtesting.py imposes no restrictions on which indicator library you use. Any function that accepts array-like inputs and returns an array works:
+
+<Tabs>
+  <Tab title="TA-Lib">
+    ```python
+    import talib
+    from backtesting import Strategy
+
+    class MyStrategy(Strategy):
+        def init(self):
+            # talib.SMA returns a NumPy array — works directly
+            self.sma = self.I(talib.SMA, self.data.Close, timeperiod=20)
+            self.rsi = self.I(talib.RSI, self.data.Close, timeperiod=14)
+    ```
+  </Tab>
+  <Tab title="pandas-ta">
+    ```python
+    import pandas_ta as ta
+    import pandas as pd
+    from backtesting import Strategy
+
+    class MyStrategy(Strategy):
+        def init(self):
+            close = pd.Series(self.data.Close)
+            self.ema = self.I(lambda s: ta.ema(s, length=20),
+                              close, name='EMA(20)')
+    ```
+  </Tab>
+  <Tab title="NumPy / pandas">
+    ```python
+    import numpy as np
+    import pandas as pd
+    from backtesting import Strategy
+
+    class MyStrategy(Strategy):
+        def init(self):
+            # Plain pandas rolling — returns a Series, which self.I() accepts
+            self.sma = self.I(pd.Series(self.data.Close).rolling(20).mean,
+                              name='SMA(20)')
+            # Or with numpy
+            self.typical = self.I(
+                lambda h, l, c: (h + l + c) / 3,
+                self.data.High, self.data.Low, self.data.Close,
+                name='Typical Price', overlay=True)
+    ```
+  </Tab>
+</Tabs>
+
+## Multi-value indicators (e.g. MACD, Bollinger Bands)
+
+Some indicators return multiple arrays — for example Bollinger Bands (upper, middle, lower) or MACD (macd, signal, hist). Return them as a tuple of arrays and provide a matching `name` list:
+
+```python
+import numpy as np
+from backtesting import Strategy
+
+def BBANDS(data, n_lookback, n_std):
+    """Returns (upper, lower) Bollinger Band arrays."""
+    hlc3 = (data.High + data.Low + data.Close) / 3
+    mean = hlc3.rolling(n_lookback).mean()
+    std  = hlc3.rolling(n_lookback).std()
+    upper = mean + n_std * std
+    lower = mean - n_std * std
+    return upper, lower
+
+class BollingerStrategy(Strategy):
+    def init(self):
+        # self.I() returns a 2D array; unpack with standard tuple assignment
+        self.bb_upper, self.bb_lower = self.I(
+            BBANDS, self.data,
+            20, 2,
+            name=['BB upper', 'BB lower'],
+            overlay=True
+        )
+
+    def next(self):
+        price = self.data.Close[-1]
+        if price < self.bb_lower[-1]:
+            self.buy()
+        elif price > self.bb_upper[-1]:
+            self.position.close()
+```
+
+<Note>
+  When `func` returns a tuple of arrays, `self.I()` returns a 2D NumPy array whose first dimension indexes each sub-array. You can unpack it normally with `a, b = self.I(...)`.
+</Note>
+
+## The `.s` accessor for pandas Series
+
+Data arrays and indicators exposed by backtesting.py are NumPy arrays for performance. If you need a pandas Series (e.g. to call `.rolling()` or `.shift()` on the result), use the `.s` accessor:
+
+```python
+class MyStrategy(Strategy):
+    def init(self):
+        close_series = self.data.Close.s     # pd.Series with DatetimeIndex
+        df           = self.data.df          # full OHLCV pd.DataFrame
+
+        # Build an indicator from a pandas operation
+        self.signal = self.I(
+            lambda s: s.rolling(5).mean() - s.rolling(20).mean(),
+            close_series, name='momentum'
+        )
+```
+
+## NaN warm-up behavior
+
+Many rolling indicators produce `NaN` values during their initial warm-up period (e.g. an SMA(200) will have 199 leading NaNs). backtesting.py automatically skips the first bars until **all declared indicators have non-NaN values** before starting to call `next()`.
+
+<Warning>
+  The simulation does not start on bar 0. It begins on the first bar where every indicator has a valid (non-NaN) value. For a strategy using a 200-bar moving average, `next()` is first called on bar 201.
+
+  This means longer lookback periods reduce the number of bars available for trading, which can affect statistics — particularly on shorter datasets.
+</Warning>
+
+```python
+class HeavyMaStrategy(Strategy):
+    def init(self):
+        # next() won't be called until bar 201
+        self.sma200 = self.I(SMA, self.data.Close, 200)
+        # If also using SMA(10), still starts at bar 201 (the slower one dictates)
+        self.sma10  = self.I(SMA, self.data.Close, 10)
+```
+
+## Plotting options
+
+### Overlay vs separate panel
+
+```python
+def init(self):
+    # Plotted on price chart (auto-detected as close to price range)
+    self.sma = self.I(SMA, self.data.Close, 20, overlay=True)
+
+    # Plotted in its own panel below the price chart
+    self.rsi = self.I(RSI, self.data.Close, 14, overlay=False)
+```
+
+The `overlay` heuristic checks whether more than 60% of indicator values fall within 30% of the closing price. If so, it defaults to `overlay=True`.
+
+### Custom colors
+
+```python
+def init(self):
+    self.fast = self.I(SMA, self.data.Close, 10,
+                       color='red', overlay=True)
+    self.slow = self.I(SMA, self.data.Close, 50,
+                       color='#1E88E5', overlay=True)
+```
+
+### Scatter markers
+
+Use `scatter=True` to render the indicator as discrete circle markers rather than a continuous line — useful for signals or trade entry points:
+
+```python
+def init(self):
+    # Mark bars where volume spikes above its 20-bar average
+    def volume_spike(vol, n):
+        avg = pd.Series(vol).rolling(n).mean()
+        return np.where(vol > 2 * avg, vol, np.nan)
+
+    self.vol_spike = self.I(
+        volume_spike, self.data.Volume, 20,
+        name='Volume spike',
+        overlay=False,
+        scatter=True,
+        color='orange'
+    )
+```
+
+### Hiding indicators from the plot
+
+Set `plot=False` to compute an indicator for internal use without rendering it:
+
+```python
+def init(self):
+    # Used in next() but not plotted
+    self.trend = self.I(SMA, self.data.Close, 100, plot=False)
+```

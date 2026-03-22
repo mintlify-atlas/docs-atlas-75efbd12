@@ -1,0 +1,229 @@
+---
+title: 'Trade'
+description: 'Represents an active or closed trade resulting from a filled Order.'
+sidebarTitle: 'Trade'
+keywords: ['trade', 'position', 'entry', 'exit', 'stop-loss', 'take-profit', 'pl', 'profit', 'loss', 'close', 'tag']
+---
+
+A `Trade` is created when an `Order` is [filled](https://www.investopedia.com/terms/f/fill.asp). Access active trades through `Strategy.trades` and settled (closed) trades through `Strategy.closed_trades`.
+
+```python
+from backtesting import Strategy
+
+class MyStrategy(Strategy):
+    def next(self):
+        for trade in self.trades:
+            print(trade.pl, trade.entry_price)
+```
+
+---
+
+## Properties
+
+### Entry and exit
+
+<ResponseField name="size" type="int">
+  Trade size in units. Negative for short trades.
+
+  ```python
+  for trade in self.trades:
+      direction = 'long' if trade.is_long else 'short'
+      print(f"{direction} trade with {abs(trade.size)} units")
+  ```
+</ResponseField>
+
+<ResponseField name="entry_price" type="float">
+  Price at which the trade was opened.
+</ResponseField>
+
+<ResponseField name="exit_price" type="float | None">
+  Price at which the trade was closed. `None` if the trade is still active.
+</ResponseField>
+
+<ResponseField name="entry_bar" type="int">
+  Candlestick bar index at the time of entry.
+</ResponseField>
+
+<ResponseField name="exit_bar" type="int | None">
+  Candlestick bar index at the time of exit. `None` if the trade is still active.
+</ResponseField>
+
+<ResponseField name="entry_time" type="pd.Timestamp | int">
+  Datetime (or integer period) of the bar at entry. The type matches the index type of the data passed to `Backtest`.
+</ResponseField>
+
+<ResponseField name="exit_time" type="pd.Timestamp | int | None">
+  Datetime (or integer period) of the bar at exit. `None` if the trade is still active.
+</ResponseField>
+
+### Profit and loss
+
+<ResponseField name="pl" type="float">
+  Profit (positive) or loss (negative) in cash units.
+
+  For active trades, this is the current unrealized P&L based on the last close price. Commissions are reflected only once the trade is closed.
+
+  ```python
+  total_pl = sum(t.pl for t in self.trades)
+  ```
+</ResponseField>
+
+<ResponseField name="pl_pct" type="float">
+  P&L as a percentage relative to the entry price, adjusted for commissions after close.
+</ResponseField>
+
+<ResponseField name="value" type="float">
+  Total trade value in cash: `abs(size) × current price`.
+</ResponseField>
+
+### Direction
+
+<ResponseField name="is_long" type="bool">
+  `True` if the trade is long (i.e. `size > 0`).
+</ResponseField>
+
+<ResponseField name="is_short" type="bool">
+  `True` if the trade is short (i.e. `size < 0`).
+</ResponseField>
+
+### SL/TP management
+
+<ResponseField name="sl" type="float | None">
+  Stop-loss price for this trade. **Writable.**
+
+  - Assigning a price creates or replaces the existing contingent stop-market order.
+  - Assigning `None` cancels the current SL order.
+
+  ```python
+  trade.sl = 98.50   # set or update stop-loss
+  trade.sl = None    # cancel stop-loss
+  ```
+
+  <Note>
+    For long trades, `sl` must be below the current price. For short trades, it must be above.
+  </Note>
+</ResponseField>
+
+<ResponseField name="tp" type="float | None">
+  Take-profit price for this trade. **Writable.**
+
+  - Assigning a price creates or replaces the existing contingent limit order.
+  - Assigning `None` cancels the current TP order.
+
+  ```python
+  trade.tp = 115.00  # set or update take-profit
+  trade.tp = None    # cancel take-profit
+  ```
+</ResponseField>
+
+### Tracking
+
+<ResponseField name="tag" type="any">
+  Arbitrary value inherited from the `Order` that opened this trade. Use for grouping, conditional logic, or post-run analysis.
+
+  ```python
+  # Tag an order
+  self.buy(size=5, tag='momentum')
+
+  # Analyze closed trades by tag
+  momentum_trades = [t for t in self.closed_trades if t.tag == 'momentum']
+  ```
+
+  See also `Order.tag`.
+</ResponseField>
+
+---
+
+## Methods
+
+### `Trade.close()`
+
+```python
+def close(portion: float = 1.0) -> None
+```
+
+Place a new market order to close `portion` of this trade at the next available price.
+
+<ParamField path="portion" type="float" default="1.0">
+  Fraction of the trade to close. Must satisfy `0 < portion <= 1`.
+
+  - `1.0` (default) closes the entire trade.
+  - `0.5` closes half the position; the remaining half stays open.
+
+  ```python
+  trade.close()      # close entirely
+  trade.close(0.5)   # close 50%
+  trade.close(0.25)  # close 25%
+  ```
+</ParamField>
+
+<Warning>
+  `portion` must be strictly greater than `0` and at most `1`. Passing `0` or a negative value raises an `AssertionError`.
+</Warning>
+
+---
+
+## Examples
+
+### Accessing trade information
+
+```python
+def next(self):
+    for trade in self.trades:
+        print(
+            f"size={trade.size}, "
+            f"entry={trade.entry_price:.2f}, "
+            f"pl={trade.pl:.2f}, "
+            f"pl_pct={trade.pl_pct:.2%}, "
+            f"value={trade.value:.2f}"
+        )
+```
+
+### Dynamic SL/TP adjustment (trailing stop)
+
+```python
+def next(self):
+    atr = self.atr[-1]
+    for trade in self.trades:
+        if trade.is_long:
+            # Trail stop-loss upward as price rises
+            new_sl = self.data.Close[-1] - 2 * atr
+            if trade.sl is None or new_sl > trade.sl:
+                trade.sl = new_sl
+
+        elif trade.is_short:
+            # Trail stop-loss downward as price falls
+            new_sl = self.data.Close[-1] + 2 * atr
+            if trade.sl is None or new_sl < trade.sl:
+                trade.sl = new_sl
+```
+
+### Partial closes
+
+```python
+def next(self):
+    for trade in self.trades:
+        # Take partial profit at a fixed return threshold
+        if trade.pl_pct >= 0.03 and trade.size > 1:
+            trade.close(0.5)   # close half the trade
+```
+
+### Tagging and post-run analysis
+
+```python
+class TaggedStrategy(Strategy):
+    def init(self):
+        pass
+
+    def next(self):
+        if some_signal:
+            self.buy(size=10, tag='signal-A')
+        elif other_signal:
+            self.sell(size=10, tag='signal-B')
+
+bt = Backtest(data, TaggedStrategy, cash=10_000)
+stats = bt.run()
+
+trades_df = stats['_trades']
+print(trades_df[trades_df['Tag'] == 'signal-A'])
+```

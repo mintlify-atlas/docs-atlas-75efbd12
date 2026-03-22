@@ -1,0 +1,144 @@
+---
+title: Fractional Share Trading
+description: Backtest strategies that trade fractional quantities — essential for crypto assets and high-priced stocks — using FractionalBacktest.
+---
+
+By default, backtesting.py assumes whole-unit position sizing. For assets where fractional quantities are common — Bitcoin, other cryptocurrencies, or high-priced stocks where you may want to trade micro-lots — `FractionalBacktest` from `backtesting.lib` provides a transparent workaround.
+
+## Why fractional trading matters
+
+Consider Bitcoin at $60,000 per coin. With $10,000 of starting capital and whole-unit sizing, you cannot buy even a single unit, making the backtest meaningless. Fractional trading lets you express positions as fractions of a unit (e.g. 0.001 BTC), which reflects how crypto exchanges actually operate.
+
+A similar issue arises with high-priced equities (e.g. Amazon, Google) when backtesting with small amounts of capital.
+
+## `FractionalBacktest`
+
+`FractionalBacktest` is a drop-in replacement for `Backtest` that transparently scales prices by `fractional_unit` before running the simulation, then un-scales trade data in the results:
+
+```python
+class FractionalBacktest(Backtest):
+    def __init__(self, data, *args, fractional_unit=1/100e6, **kwargs):
+        ...
+```
+
+Internally it applies the transformation:
+
+```python
+data[['Open', 'High', 'Low', 'Close']] *= fractional_unit
+data['Volume'] /= fractional_unit
+```
+
+This converts prices into units of `fractional_unit`, so that **buying one "unit" in the simulation corresponds to buying one `fractional_unit` of the real asset**. The `run()` method reverses this scaling on trade prices and sizes before returning results.
+
+## The `fractional_unit` parameter
+
+| Value | Asset | Meaning |
+|-------|-------|---------|
+| `1/100e6` (default) | Bitcoin | 1 satoshi (10⁻⁸ BTC) |
+| `1/1e6` | Bitcoin | 1 micro-BTC (μBTC) |
+| `1/1000` | Stocks | 1 milli-share |
+| `1/100` | General | 1 cent-share |
+
+## Basic Bitcoin example
+
+```python
+from backtesting import Strategy
+from backtesting.lib import FractionalBacktest, crossover
+from backtesting.test import BTCUSD, SMA
+
+
+class SmaCross(Strategy):
+    n1 = 10
+    n2 = 20
+
+    def init(self):
+        self.sma1 = self.I(SMA, self.data.Close, self.n1)
+        self.sma2 = self.I(SMA, self.data.Close, self.n2)
+
+    def next(self):
+        if crossover(self.sma1, self.sma2):
+            self.position.close()
+            self.buy()
+        elif crossover(self.sma2, self.sma1):
+            self.position.close()
+            self.sell()
+
+
+# Use FractionalBacktest instead of Backtest
+# Default fractional_unit=1/100e6 (satoshi precision)
+bt = FractionalBacktest(BTCUSD, SmaCross, cash=10_000, commission=.001)
+stats = bt.run()
+print(stats)
+```
+
+The returned `stats` and trade data are automatically rescaled back to original BTC prices and quantities — you read results in familiar BTC terms.
+
+## Custom fractional unit
+
+For micro-BTC (μBTC) trading, where the smallest unit is 0.000001 BTC:
+
+```python
+bt = FractionalBacktest(
+    BTCUSD,
+    SmaCross,
+    cash=10_000,
+    commission=.001,
+    fractional_unit=1/1e6   # 1 micro-BTC
+)
+stats = bt.run()
+```
+
+For milli-share trading of a high-priced stock:
+
+```python
+from backtesting.test import GOOG
+
+bt = FractionalBacktest(
+    GOOG,
+    SmaCross,
+    cash=500,
+    commission=.002,
+    fractional_unit=1/1000   # 1 milli-share
+)
+stats = bt.run()
+```
+
+## How results are reported
+
+After calling `run()`, `FractionalBacktest` reverses the price scaling on all trade records:
+
+- `trades['Size']` is multiplied by `fractional_unit` → reported in real asset units
+- `trades['EntryPrice']` and `trades['ExitPrice']` are divided by `fractional_unit` → reported in real currency
+- `trades['TP']` and `trades['SL']` are similarly un-scaled
+
+Indicators declared with `overlay=True` are also un-scaled so they align correctly with the price chart.
+
+```python
+stats = bt.run()
+print(stats['_trades'][['Size', 'EntryPrice', 'ExitPrice', 'PnL']].head())
+```
+
+<Note>
+  `FractionalBacktest` inherits all parameters from `Backtest`: `cash`, `commission`, `margin`, `trade_on_close`, `exclusive_orders`, `hedging`, and `finalize_trades`. You can use optimization and plotting exactly as you would with a standard `Backtest` instance.
+</Note>
+
+## Combining with optimization
+
+`FractionalBacktest` supports `optimize()` identically to `Backtest`:
+
+```python
+bt = FractionalBacktest(BTCUSD, SmaCross, cash=10_000, commission=.001)
+
+stats, heatmap = bt.optimize(
+    n1=range(5, 30, 5),
+    n2=range(10, 60, 5),
+    constraint=lambda p: p.n1 < p.n2,
+    maximize='Sharpe Ratio',
+    return_heatmap=True
+)
+print(stats._strategy)
+```
+
+<Warning>
+  Choosing an inappropriate `fractional_unit` that is too large may cause position sizing to behave unexpectedly. As a rule of thumb, set `fractional_unit` so that the scaled price fits comfortably within a normal equity range (e.g. $0.01–$1000 per scaled unit).
+</Warning>

@@ -1,0 +1,390 @@
+---
+title: 'Composable strategies'
+description: 'Ready-made base strategy classes and Backtest subclasses from backtesting.lib for signal-driven, trailing stop-loss, fractional, and multi-instrument backtesting.'
+sidebarTitle: 'Composable strategies'
+keywords: ['SignalStrategy', 'TrailingStrategy', 'FractionalBacktest', 'MultiBacktest', 'ATR', 'trailing stop', 'fractional trading', 'multi-asset']
+---
+
+`backtesting.lib` provides composable strategy base classes and `Backtest` subclasses that handle common patterns — vectorized signal dispatch, ATR-based trailing stops, fractional share trading, and running on multiple instruments — so you can focus on your signal logic.
+
+```python
+from backtesting.lib import SignalStrategy, TrailingStrategy, FractionalBacktest, MultiBacktest
+```
+
+<Note>
+  When subclassing any of these classes, always call `super().init()` inside your `init()` override and `super().next()` inside your `next()` override. Omitting these calls disables the composable behavior.
+</Note>
+
+---
+
+## `SignalStrategy`
+
+```python
+class SignalStrategy(Strategy)
+```
+
+A helper base strategy that accepts pre-computed entry and exit **signal vectors**, simulating a vectorized backtest within the event-driven framework. You precompute signals over the entire price history in `init()` and let `SignalStrategy` handle order dispatch bar-by-bar in `next()`.
+
+### `set_signal(entry_size, exit_portion=None, *, plot=True)`
+
+```python
+set_signal(
+    entry_size: Sequence[float],
+    exit_portion: Sequence[float] | None = None,
+    *,
+    plot: bool = True
+) -> None
+```
+
+Registers the entry and exit signal arrays. Call this from inside your `init()` override.
+
+<ParamField path="entry_size" type="Sequence[float]" required>
+  An array of floats with one value per bar:
+
+  - **Positive** values place a long entry order of that size.
+  - **Negative** values place a short entry order of that absolute size.
+  - **Zero** values take no action.
+
+  Size semantics follow `Strategy.buy(size=...)` — values in `(0, 1)` are fractions of equity; values `≥ 1` are absolute unit counts.
+</ParamField>
+
+<ParamField path="exit_portion" type="Sequence[float] | None" default="None">
+  An optional array of floats with one value per bar:
+
+  - **Positive** values close that portion of any open **long** trades.
+  - **Negative** values close that portion of any open **short** trades.
+  - **Zero** or `None` takes no exit action.
+
+  Portion semantics follow `Trade.close(portion=...)` — use `1.0` to close the full position.
+</ParamField>
+
+<ParamField path="plot" type="bool" default="true">
+  When `True`, the signal indicators are shown on the chart when `Backtest.plot()` is called.
+</ParamField>
+
+### Example
+
+```python
+import numpy as np
+import pandas as pd
+from backtesting import Backtest
+from backtesting.lib import SignalStrategy
+from backtesting.test import GOOG
+
+def SMA(series, n):
+    return pd.Series(series).rolling(n).mean().values
+
+class SmaCrossSignal(SignalStrategy):
+    n_fast = 10
+    n_slow = 30
+
+    def init(self):
+        super().init()
+        close = self.data.Close
+
+        sma_fast = SMA(close, self.n_fast)
+        sma_slow = SMA(close, self.n_slow)
+
+        # Positive signal when fast > slow (long), negative when fast < slow (short)
+        signal = np.where(sma_fast > sma_slow, 1, np.where(sma_fast < sma_slow, -1, 0))
+
+        # Shift by 1 to avoid look-ahead bias
+        entry = np.roll(signal, 1).astype(float)
+        entry[0] = 0
+
+        self.set_signal(entry_size=entry)
+
+bt = Backtest(GOOG, SmaCrossSignal, cash=10_000, commission=0.002)
+stats = bt.run()
+print(stats[['Return [%]', 'Sharpe Ratio', '# Trades']])
+```
+
+<Tip>
+  `SignalStrategy` is best suited for converting an existing vectorized strategy into an event-driven backtest for accurate order simulation. It does not apply any order management (SL/TP) on its own — layer `TrailingStrategy` on top for that.
+</Tip>
+
+---
+
+## `TrailingStrategy`
+
+```python
+class TrailingStrategy(Strategy)
+```
+
+A base strategy that automatically manages a trailing stop-loss based on Average True Range (ATR). The trailing stop moves up (for long trades) or down (for short trades) as price moves in the trade's favor, locking in profits while giving the trade room to breathe.
+
+The ATR is computed once in `init()`. The stop-loss for each open trade is updated on every bar in `next()`.
+
+### `set_atr_periods(periods=100)`
+
+```python
+set_atr_periods(periods: int = 100) -> None
+```
+
+Sets the lookback period for ATR computation. Call from inside your `init()` override, after `super().init()`.
+
+<ParamField path="periods" type="int" default="100">
+  Number of bars for the rolling ATR window. Larger values produce a smoother, more stable ATR. The default of 100 is intentionally conservative to avoid volatile stops during warm-up.
+</ParamField>
+
+### `set_trailing_sl(n_atr=6)`
+
+```python
+set_trailing_sl(n_atr: float = 6) -> None
+```
+
+Sets the trailing stop-loss distance as a multiple of ATR below (for longs) or above (for shorts) the current close price.
+
+<ParamField path="n_atr" type="float" default="6">
+  Number of ATR units the trailing stop trails behind the current price. A larger multiple gives the trade more room; a smaller multiple triggers exits sooner.
+</ParamField>
+
+### `set_trailing_pct(pct=0.05)`
+
+```python
+set_trailing_pct(pct: float = 0.05) -> None
+```
+
+Sets the trailing stop-loss distance as a percentage of the current price, converted internally to ATR units via `mean(Close * pct / atr)`.
+
+<ParamField path="pct" type="float" default="0.05">
+  Trailing stop distance as a rate (e.g. `0.05` for 5%). Must be strictly between 0 and 1.
+</ParamField>
+
+<Warning>
+  The percentage-based stop is an approximation. Because `set_trailing_pct` converts the percentage to a fixed ATR multiple using a historical mean, the actual trailing stop distance will vary bar to bar with the ATR.
+</Warning>
+
+### Example
+
+```python
+import pandas as pd
+from backtesting import Backtest
+from backtesting.lib import TrailingStrategy, crossover
+from backtesting.test import GOOG
+
+def SMA(series, n):
+    return pd.Series(series).rolling(n).mean().values
+
+class TrailingSmaStrategy(TrailingStrategy):
+    n_fast = 10
+    n_slow = 30
+    n_atr = 6
+
+    def init(self):
+        super().init()
+        self.sma_fast = self.I(SMA, self.data.Close, self.n_fast)
+        self.sma_slow = self.I(SMA, self.data.Close, self.n_slow)
+
+        # Configure trailing stop: 6x ATR away from price
+        self.set_atr_periods(100)
+        self.set_trailing_sl(self.n_atr)
+
+    def next(self):
+        super().next()  # updates trailing stop on all open trades
+
+        if crossover(self.sma_fast, self.sma_slow) and not self.position:
+            self.buy()
+        elif crossover(self.sma_slow, self.sma_fast) and self.position.is_long:
+            self.position.close()
+
+bt = Backtest(GOOG, TrailingSmaStrategy, cash=10_000, commission=0.002)
+stats = bt.run()
+print(stats[['Return [%]', 'Max. Drawdown [%]', '# Trades']])
+bt.plot()
+```
+
+<Note>
+  The trailing stop only moves in the trade's favor — it will never widen a stop that has already been set. Each call to `super().next()` updates `trade.sl` for every open trade.
+</Note>
+
+---
+
+## `FractionalBacktest`
+
+```python
+class FractionalBacktest(Backtest)
+```
+
+A `Backtest` subclass that enables fractional share trading. It rescales OHLCV prices by `fractional_unit` before passing data to the engine (so integer unit sizes map to fractional amounts), then unscales trade results back to the original price units in `run()`.
+
+This approach works around the engine's whole-number unit constraint without modifying strategy logic.
+
+### Constructor
+
+```python
+FractionalBacktest(data, *args, fractional_unit=1/100e6, **kwargs)
+```
+
+<ParamField path="data" type="pd.DataFrame" required>
+  OHLCV price data, same format as `Backtest`. The constructor automatically rescales `Open`, `High`, `Low`, `Close` by `fractional_unit` and `Volume` by `1 / fractional_unit` internally.
+</ParamField>
+
+<ParamField path="fractional_unit" type="float" default="1/100_000_000">
+  The smallest tradable fraction. Defaults to one [satoshi](https://en.wikipedia.org/wiki/Bitcoin#Units_and_divisibility) (`1e-8` BTC). For μBTC trading, pass `1/1e6`. The engine then trades in whole multiples of this unit.
+</ParamField>
+
+<ParamField path="*args">
+  Additional positional arguments passed through to `Backtest.__init__()`.
+</ParamField>
+
+<ParamField path="**kwargs">
+  Additional keyword arguments passed through to `Backtest.__init__()` (e.g. `cash`, `commission`, `margin`).
+</ParamField>
+
+### `run(**kwargs)`
+
+```python
+FractionalBacktest.run(**kwargs) -> pd.Series
+```
+
+Same interface as `Backtest.run()`. Runs the backtest on the rescaled data, then translates trade `Size`, `EntryPrice`, `ExitPrice`, `TP`, and `SL` fields back to the original price scale before returning results.
+
+### Example
+
+```python
+from backtesting import Strategy
+from backtesting.lib import FractionalBacktest, crossover
+from backtesting.test import BTCUSD
+import pandas as pd
+
+def SMA(series, n):
+    return pd.Series(series).rolling(n).mean().values
+
+class BtcSmaCross(Strategy):
+    n_fast = 10
+    n_slow = 30
+
+    def init(self):
+        self.sma_fast = self.I(SMA, self.data.Close, self.n_fast)
+        self.sma_slow = self.I(SMA, self.data.Close, self.n_slow)
+
+    def next(self):
+        if crossover(self.sma_fast, self.sma_slow):
+            self.buy(size=0.01)  # Buy 0.01 BTC (1_000_000 satoshis)
+        elif crossover(self.sma_slow, self.sma_fast):
+            self.position.close()
+
+# fractional_unit=1/1e8 → 1 satoshi (default for BTC)
+bt = FractionalBacktest(
+    BTCUSD,
+    BtcSmaCross,
+    fractional_unit=1 / 100e6,  # 1 satoshi
+    cash=10_000,
+    commission=0.001,
+)
+stats = bt.run()
+print(stats[['Return [%]', 'Equity Final [$]', '# Trades']])
+```
+
+<Warning>
+  If any asset price exceeds `cash / fractional_unit`, the backtest may not be able to open positions. Increase `cash` or adjust `fractional_unit` accordingly.
+</Warning>
+
+---
+
+## `MultiBacktest`
+
+```python
+class MultiBacktest
+```
+
+A wrapper that runs the same strategy on **multiple instruments in parallel**, enabling cross-instrument comparison and portfolio-level optimization. Internally, `run()` uses multiprocessing for efficiency.
+
+### Constructor
+
+```python
+MultiBacktest(df_list, strategy_cls, **kwargs)
+```
+
+<ParamField path="df_list" type="list[pd.DataFrame]" required>
+  A list of OHLCV DataFrames — one per instrument. Each DataFrame must have the standard `Open`, `High`, `Low`, `Close` (and optionally `Volume`) columns with a `DatetimeIndex`.
+</ParamField>
+
+<ParamField path="strategy_cls" type="Type[Strategy]" required>
+  The strategy class (not an instance) to run on all instruments.
+</ParamField>
+
+<ParamField path="**kwargs">
+  Keyword arguments passed to each underlying `Backtest` constructor (e.g. `cash`, `commission`, `margin`). Applied uniformly across all instruments.
+</ParamField>
+
+### `run(**kwargs)`
+
+```python
+MultiBacktest.run(**kwargs) -> pd.DataFrame
+```
+
+Runs the strategy on all instruments. Returns a `pd.DataFrame` where each column corresponds to one instrument (by list index) and each row is a `run()` statistics field. Instruments with zero trades return `None` for that column.
+
+<ParamField path="**kwargs">
+  Strategy parameter overrides, same as `Backtest.run(**kwargs)`. Applied to all instruments in the run.
+</ParamField>
+
+<ResponseField name="returns" type="pd.DataFrame">
+  A DataFrame of performance statistics with instrument indexes as columns. Rows are the same fields returned by `Backtest.run()` (e.g. `'Return [%]'`, `'Sharpe Ratio'`, `'# Trades'`).
+</ResponseField>
+
+### `optimize(**kwargs)`
+
+```python
+MultiBacktest.optimize(**kwargs) -> pd.DataFrame
+```
+
+Runs `Backtest.optimize()` on each instrument sequentially and aggregates the resulting heatmaps into a single `pd.DataFrame`. Use this to find parameter combinations that are robust across instruments.
+
+<ParamField path="**kwargs">
+  Parameter ranges and optimization options, same as `Backtest.optimize()`. `return_heatmap` is set to `True` internally.
+</ParamField>
+
+<ResponseField name="returns" type="pd.DataFrame">
+  A DataFrame where each column is the optimization heatmap (`pd.Series`) for one instrument. Use `heatmap.mean(axis=1)` to aggregate across instruments before passing to `plot_heatmaps()`.
+</ResponseField>
+
+### Example
+
+```python
+import pandas as pd
+from backtesting import Strategy
+from backtesting.lib import MultiBacktest, crossover, plot_heatmaps
+from backtesting.test import EURUSD, GOOG
+
+def SMA(series, n):
+    return pd.Series(series).rolling(n).mean().values
+
+class SmaCross(Strategy):
+    n_fast = 10
+    n_slow = 30
+
+    def init(self):
+        self.sma_fast = self.I(SMA, self.data.Close, self.n_fast)
+        self.sma_slow = self.I(SMA, self.data.Close, self.n_slow)
+
+    def next(self):
+        if crossover(self.sma_fast, self.sma_slow):
+            self.buy()
+        elif crossover(self.sma_slow, self.sma_fast):
+            self.position.close()
+
+# Run on two instruments simultaneously
+btm = MultiBacktest([EURUSD, GOOG], SmaCross, cash=10_000, commission=0.002)
+
+# Single run — compare stats side by side
+stats_df: pd.DataFrame = btm.run(n_fast=10, n_slow=30)
+print(stats_df.loc[['Return [%]', 'Sharpe Ratio', '# Trades']])
+
+# Optimization — aggregate heatmaps across instruments
+heatmap_df: pd.DataFrame = btm.optimize(
+    n_fast=range(5, 25, 5),
+    n_slow=range(10, 60, 10),
+    constraint=lambda p: p.n_fast < p.n_slow,
+    maximize='Sharpe Ratio',
+)
+
+# Average heatmap across both instruments, then plot
+plot_heatmaps(heatmap_df.mean(axis=1))
+```
+
+<Tip>
+  `MultiBacktest.optimize()` runs each instrument sequentially (since `Backtest.optimize()` already uses multiprocessing internally). For a large number of instruments, consider batching them or running on a machine with many cores.
+</Tip>

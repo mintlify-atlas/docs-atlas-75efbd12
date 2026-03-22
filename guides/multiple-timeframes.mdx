@@ -1,0 +1,187 @@
+---
+title: Multiple Time Frames
+description: Apply indicators across different time frames without introducing look-ahead bias using resample_apply().
+---
+
+Many trading strategies combine signals from multiple time frames — for example, a weekly trend filter with daily entry signals. backtesting.py supports this via `resample_apply()` from `backtesting.lib`, which handles resampling, indicator application, and back-alignment in a single call.
+
+## The core concept
+
+You always pass the **lowest time frame** data to `Backtest`. To use a higher time frame, you resample up, apply an indicator, then forward-fill the values back down to the original frequency.
+
+The critical detail is `label='right'`: each resampled bar is labeled with the **end** of its period, not the start. This ensures the indicator value for a given week is only available after that week closes — preventing look-ahead bias.
+
+## `resample_apply()`
+
+```python
+from backtesting.lib import resample_apply
+
+resample_apply(rule, func, series, *args, agg=None, **kwargs)
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `rule` | Pandas offset string: `'W-FRI'`, `'D'`, `'4H'`, `'ME'`, etc. |
+| `func` | Indicator function to apply on the resampled series |
+| `series` | A `Strategy.data.*` array or `pd.Series` with a DatetimeIndex |
+| `*args` | Extra positional arguments forwarded to `func` |
+| `agg` | Aggregation function for resampling. Defaults to `OHLCV_AGG` for DataFrames, or the appropriate entry from `OHLCV_AGG` for named Series, otherwise `'last'` |
+| `**kwargs` | Extra keyword arguments forwarded to `func` (except `plot`, `overlay`, `color`, `scatter` which go to `self.I()`) |
+
+When called from inside `Strategy.init()`, the result is automatically wrapped with `self.I()`, so it is plotted and managed like any other indicator.
+
+## Complete example: weekly RSI with daily MAs
+
+This strategy uses RSI computed on daily and weekly close prices, plus four daily moving averages, to decide when to enter and exit long trades:
+
+```python
+import pandas as pd
+from backtesting import Strategy, Backtest
+from backtesting.lib import resample_apply
+from backtesting.test import GOOG
+
+
+def SMA(array, n):
+    """Simple moving average."""
+    return pd.Series(array).rolling(n).mean()
+
+
+def RSI(array, n):
+    """Relative strength index (approximate)."""
+    gain = pd.Series(array).diff()
+    loss = gain.copy()
+    gain[gain < 0] = 0
+    loss[loss > 0] = 0
+    rs = gain.ewm(n).mean() / loss.abs().ewm(n).mean()
+    return 100 - 100 / (1 + rs)
+
+
+class System(Strategy):
+    d_rsi = 30   # Daily RSI lookback
+    w_rsi = 30   # Weekly RSI lookback
+    level = 70   # RSI entry threshold
+
+    def init(self):
+        # Daily moving averages — standard self.I() usage
+        self.ma10  = self.I(SMA, self.data.Close, 10)
+        self.ma20  = self.I(SMA, self.data.Close, 20)
+        self.ma50  = self.I(SMA, self.data.Close, 50)
+        self.ma100 = self.I(SMA, self.data.Close, 100)
+
+        # Daily RSI computed on the original (daily) time frame
+        self.daily_rsi = self.I(RSI, self.data.Close, self.d_rsi)
+
+        # Weekly RSI: resample daily Close to weekly (Friday end),
+        # apply RSI, then forward-fill back to daily index.
+        # resample_apply() handles all of this automatically.
+        self.weekly_rsi = resample_apply(
+            'W-FRI', RSI, self.data.Close, self.w_rsi)
+
+    def next(self):
+        price = self.data.Close[-1]
+
+        if (not self.position
+                and self.daily_rsi[-1]  > self.level
+                and self.weekly_rsi[-1] > self.level
+                and self.weekly_rsi[-1] > self.daily_rsi[-1]
+                and self.ma10[-1] > self.ma20[-1] > self.ma50[-1] > self.ma100[-1]
+                and price > self.ma10[-1]):
+            # Enter long with an 8% stop-loss
+            self.buy(sl=.92 * price)
+
+        elif price < .98 * self.ma10[-1]:
+            self.position.close()
+
+
+backtest = Backtest(GOOG, System, commission=.002)
+stats = backtest.run()
+print(stats)
+```
+
+## How look-ahead bias is prevented
+
+Internally, `resample_apply()` resamples with `label='right'`:
+
+```python
+resampled = series.resample(rule, label='right').agg(agg).dropna()
+```
+
+This labels each weekly bar with the **Friday close date** (for `'W-FRI'`), not the Monday open. The resampled indicator is then forward-filled back to the original daily index:
+
+```python
+result = result.reindex(
+    index=series.index.union(resampled.index),
+    method='ffill'
+).reindex(series.index)
+```
+
+The net effect: on any given daily bar, `self.weekly_rsi[-1]` reflects the RSI value of the **last completed week**, never the current in-progress week.
+
+## Manual equivalent
+
+For complete transparency, here is what `resample_apply('D', SMA, self.data.Close, 10)` does internally when working with hourly data:
+
+```python
+class System(Strategy):
+    def init(self):
+        # 1. Get closing prices as a pandas Series with DatetimeIndex
+        close = self.data.Close.s
+
+        # 2. Resample to daily; label='right' prevents look-ahead bias
+        daily = close.resample('D', label='right').agg('last')
+
+        # 3. Apply indicator on the resampled series,
+        #    then reindex back to the original hourly frequency
+        def daily_sma(series, n):
+            from backtesting.test import SMA
+            return SMA(series, n).reindex(close.index).ffill()
+
+        # 4. Wrap in self.I() so it is plotted and properly managed
+        self.sma = self.I(daily_sma, daily, 10, plot=False)
+```
+
+Using `resample_apply()` reduces all of the above to a single line.
+
+## OHLCV aggregation
+
+When resampling a full OHLCV DataFrame rather than a single Series, use the `OHLCV_AGG` dictionary for correct aggregation:
+
+```python
+from backtesting.lib import OHLCV_AGG
+
+# Manually resample a DataFrame
+weekly_df = data.resample('W-FRI', label='right').agg(OHLCV_AGG).dropna()
+```
+
+`OHLCV_AGG` is defined as:
+
+```python
+OHLCV_AGG = {
+    'Open':   'first',
+    'High':   'max',
+    'Low':    'min',
+    'Close':  'last',
+    'Volume': 'sum',
+}
+```
+
+This is the default when `resample_apply()` receives a DataFrame or a Series named after one of these columns.
+
+## Common Pandas offset strings
+
+| Rule | Meaning |
+|------|---------|
+| `'D'` | Calendar day |
+| `'W-FRI'` | Week ending Friday |
+| `'ME'` | Month end |
+| `'QE'` | Quarter end |
+| `'4H'` | 4-hour bars |
+| `'2W-MON'` | Bi-weekly, ending Monday |
+
+<Tip>
+  Always pass data in the **finest** time frame your strategy uses. If you need both hourly and daily signals, pass hourly OHLCV data and use `resample_apply('D', ...)` to compute daily indicators.
+</Tip>
+
+<Note>
+  `resample_apply()` requires that `series` has a `DatetimeIndex`. If your data uses a plain integer index, the function will raise an assertion error.
+</Note>

@@ -1,80 +1,175 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Run your first backtest in under five minutes using a simple moving average crossover strategy on Google stock data.
 ---
 
-## Get started in three steps
+This guide walks you through a complete backtest from scratch. By the end you will have defined a strategy, run a simulation, reviewed performance statistics, and opened an interactive chart.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
+  <Step title="Install the package">
+    Install backtesting.py from PyPI:
 
-### Step 1: Set up your local environment
+    ```bash
+    pip install backtesting
+    ```
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    See the [installation guide](/installation) for full details including dependencies and environment notes.
+  </Step>
 
-### Step 2: Deploy your changes
+  <Step title="Import required modules">
+    Open a Python script or Jupyter notebook and import the three things you need:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```python
+    from backtesting import Backtest, Strategy
+    from backtesting.lib import crossover
+    from backtesting.test import SMA, GOOG
+    ```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    - `Backtest` — the simulation engine.
+    - `Strategy` — the abstract base class your strategy must extend.
+    - `crossover` — a helper from `backtesting.lib` that returns `True` on the bar where one series crosses above another.
+    - `SMA` — a simple moving average function included for testing.
+    - `GOOG` — a built-in DataFrame of daily Google (Alphabet) OHLCV data from 2004 to 2013, used throughout the documentation examples.
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Define a strategy">
+    Subclass `Strategy` and implement two methods:
 
-### Step 3: Go live
+    - `init()` — called once before the simulation. Declare indicators here using `self.I()`.
+    - `next()` — called once per bar (candle). Place or close orders here.
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    ```python
+    class SmaCross(Strategy):
+        def init(self):
+            price = self.data.Close
+            self.ma1 = self.I(SMA, price, 10)
+            self.ma2 = self.I(SMA, price, 20)
+
+        def next(self):
+            if crossover(self.ma1, self.ma2):
+                self.buy()
+            elif crossover(self.ma2, self.ma1):
+                self.sell()
+    ```
+
+    `self.I(func, *args)` wraps an indicator function so the engine reveals its values gradually as the simulation progresses bar-by-bar, matching how a live system would see the data.
+
+    The strategy buys when the 10-day SMA crosses above the 20-day SMA and sells (goes short or closes) when the 20-day crosses back above the 10-day.
+
+    <Tip>
+      Strategy parameters can be declared as class-level variables and later swept with `bt.optimize()`. For example, you could write `n1 = 10` and `n2 = 20` as class attributes and reference them inside `init()`.
+    </Tip>
+  </Step>
+
+  <Step title="Create and run a Backtest">
+    Pass your data and strategy class to `Backtest`, then call `run()`:
+
+    ```python
+    bt = Backtest(GOOG, SmaCross, commission=.002, exclusive_orders=True)
+    stats = bt.run()
+    print(stats)
+    ```
+
+    - `commission=.002` — 0.2% round-trip commission per trade.
+    - `exclusive_orders=True` — each new `buy()` or `sell()` automatically closes any open position in the opposite direction before opening the new one, keeping position management simple.
+
+    `bt.run()` returns a `pandas.Series` containing every performance metric.
+  </Step>
+
+  <Step title="Read the statistics">
+    Running the example above prints output similar to:
+
+    ```text
+    Start                     2004-08-19 00:00:00
+    End                       2013-03-01 00:00:00
+    Duration                   3116 days 00:00:00
+    Exposure Time [%]                       94.27
+    Equity Final [$]                     68935.12
+    Equity Peak [$]                      68991.22
+    Return [%]                             589.35
+    Buy & Hold Return [%]                  703.46
+    Return (Ann.) [%]                       25.42
+    Volatility (Ann.) [%]                   38.43
+    CAGR [%]                                16.80
+    Sharpe Ratio                             0.66
+    Sortino Ratio                            1.30
+    Calmar Ratio                             0.77
+    Alpha [%]                              450.62
+    Beta                                     0.02
+    Max. Drawdown [%]                      -33.08
+    Avg. Drawdown [%]                       -5.58
+    Max. Drawdown Duration      688 days 00:00:00
+    Avg. Drawdown Duration       41 days 00:00:00
+    # Trades                                   93
+    Win Rate [%]                            53.76
+    Best Trade [%]                          57.12
+    Worst Trade [%]                        -16.63
+    Avg. Trade [%]                           1.96
+    Max. Trade Duration         121 days 00:00:00
+    Avg. Trade Duration          32 days 00:00:00
+    Profit Factor                            2.13
+    Expectancy [%]                           6.91
+    SQN                                      1.78
+    Kelly Criterion                        0.6134
+    _strategy              SmaCross(n1=10, n2=20)
+    _equity_curve                          Equ...
+    _trades                       Size  EntryB...
+    dtype: object
+    ```
+
+    The strategy returned 589% over the period versus a buy-and-hold return of 703%, with a CAGR of 16.8%, a Sharpe ratio of 0.66, and a maximum drawdown of -33%. It executed 93 trades with a 53.8% win rate.
+
+    `stats._trades` is a full DataFrame of every individual trade with entry/exit bars, sizes, P&L, and commissions. `stats._equity_curve` is the equity curve as a time series.
+  </Step>
+
+  <Step title="Plot the results">
+    Open an interactive Bokeh chart:
+
+    ```python
+    bt.plot()
+    ```
+
+    The chart shows the OHLC candlestick data, your declared indicators overlaid or in sub-panels, trade entry/exit markers, and the equity curve with drawdown periods highlighted.
+
+    <Note>
+      `bt.plot()` opens a browser window when run from a standalone script. In a Jupyter notebook it renders inline. If you are running in a non-interactive environment, pass `filename="output.html"` to save the chart to a file instead.
+    </Note>
+  </Step>
+</Steps>
+
+## Complete example
+
+Here is the entire working example in one block:
+
+```python
+from backtesting import Backtest, Strategy
+from backtesting.lib import crossover
+from backtesting.test import SMA, GOOG
+
+
+class SmaCross(Strategy):
+    def init(self):
+        price = self.data.Close
+        self.ma1 = self.I(SMA, price, 10)
+        self.ma2 = self.I(SMA, price, 20)
+
+    def next(self):
+        if crossover(self.ma1, self.ma2):
+            self.buy()
+        elif crossover(self.ma2, self.ma1):
+            self.sell()
+
+
+bt = Backtest(GOOG, SmaCross, commission=.002, exclusive_orders=True)
+stats = bt.run()
+bt.plot()
+```
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
+Now that you have a working backtest, explore the rest of the documentation to go further:
 
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+- Bring your own OHLCV data as a pandas DataFrame with a `DatetimeIndex`.
+- Add parameters to your strategy and use `bt.optimize()` to find the best values.
+- Use composable base strategies from `backtesting.lib` such as `TrailingStrategy` or `SignalStrategy`.
+- Plug in any indicator library — TA-Lib, pandas-ta, or your own NumPy functions — via `self.I()`.

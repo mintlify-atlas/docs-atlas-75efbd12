@@ -1,0 +1,492 @@
+---
+title: 'Backtest'
+description: 'Core class for backtesting a trading strategy on historical OHLCV data.'
+sidebarTitle: 'Backtest'
+keywords: ['backtest', 'backtesting', 'trading', 'strategy', 'OHLCV', 'optimization']
+---
+
+The `Backtest` class is the entry point for running and optimizing trading strategies. Initialize it with historical data and a strategy class, then call `run()`, `optimize()`, or `plot()`.
+
+```python
+from backtesting import Backtest, Strategy
+```
+
+## Constructor
+
+```python
+Backtest(data, strategy, *, cash=10000, spread=0.0, commission=0.0, margin=1.0,
+         trade_on_close=False, hedging=False, exclusive_orders=False, finalize_trades=False)
+```
+
+<ParamField path="data" type="pd.DataFrame" required>
+  OHLCV price data. Must contain columns `Open`, `High`, `Low`, and `Close`. A `Volume` column is optional — if omitted, it is set to `NaN`. The index must be a `pd.DatetimeIndex` (recommended) or a monotonic range index.
+
+  ```python
+  # Minimal setup if you only have close prices
+  df['Open'] = df['High'] = df['Low'] = df['Close']
+  ```
+
+  <Warning>
+    All OHLC values must be non-null. Strip missing rows with `df.dropna()` or fill them with `df.interpolate()` before passing the data.
+  </Warning>
+</ParamField>
+
+<ParamField path="strategy" type="Type[Strategy]" required>
+  A `Strategy` subclass (the class itself, **not** an instance). The class must implement `init()` and `next()` methods.
+
+  ```python
+  # Correct — pass the class
+  Backtest(data, SmaCross)
+
+  # Wrong — do not instantiate
+  Backtest(data, SmaCross())
+  ```
+</ParamField>
+
+<ParamField path="cash" type="float" default="10000">
+  Initial cash balance. All trades are sized relative to this starting capital.
+
+  <Warning>
+    Fractional trading is not supported. If any asset price exceeds the initial cash, the backtest will warn you. Consider increasing `cash` or using `backtesting.lib.FractionalBacktest`.
+  </Warning>
+</ParamField>
+
+<ParamField path="spread" type="float" default="0.0">
+  Constant bid-ask spread as a fraction of the entry price. Applied **once** at order entry. For example, `0.0002` models a 0.02% spread typical in commission-less forex trading.
+
+  <Note>
+    `spread` is applied at entry only. Use `commission` for fees that apply at both entry and exit.
+  </Note>
+</ParamField>
+
+<ParamField path="commission" type="float | tuple[float, float] | callable" default="0.0">
+  Commission rate applied at **both** trade entry and exit. Accepts three forms:
+
+  - **`float`** — relative commission as a fraction of order value. E.g. `0.01` for 1%.
+  - **`(fixed, relative)` tuple** — fixed cash amount plus a relative fraction. E.g. `(100, 0.01)` for $100 + 1%.
+  - **`callable(order_size: int, price: float) -> float`** — custom commission function. `order_size` is negative for short orders. Useful for modeling rebates or tiered fee schedules.
+
+  Negative commission values represent market-maker rebates.
+
+  <Note>
+    Before v0.4.0, commission was applied only once (like `spread` is now). To preserve old behavior, use `spread` instead.
+  </Note>
+</ParamField>
+
+<ParamField path="margin" type="float" default="1.0">
+  Required margin ratio for leveraged trading. The ratio is `1 / leverage`. For example, `0.02` enables 50:1 leverage. No distinction is made between initial and maintenance margin.
+
+  Must be between `0` (exclusive) and `1` (inclusive).
+</ParamField>
+
+<ParamField path="trade_on_close" type="bool" default="false">
+  When `True`, market orders fill at the **current** bar's closing price instead of the next bar's open. Useful for strategies that decide to trade at bar close.
+</ParamField>
+
+<ParamField path="hedging" type="bool" default="false">
+  When `True`, allows simultaneous long and short positions. When `False` (default), opposite-facing orders close existing positions in [FIFO](https://www.investopedia.com/terms/n/nfa-compliance-rule-2-43b.asp) order.
+</ParamField>
+
+<ParamField path="exclusive_orders" type="bool" default="false">
+  When `True`, placing a new order automatically cancels all pending orders and closes the current position, ensuring at most one trade is active at any time.
+</ParamField>
+
+<ParamField path="finalize_trades" type="bool" default="false">
+  When `True`, any trades still open at the end of the backtest are closed on the last bar and included in the computed statistics. When `False`, a warning is issued for any remaining open trades.
+</ParamField>
+
+---
+
+## `Backtest.run()`
+
+```python
+Backtest.run(**kwargs) -> pd.Series
+```
+
+Run the backtest and return a `pd.Series` of performance statistics.
+
+Keyword arguments override strategy class-level parameter defaults for this run:
+
+```python
+bt = Backtest(data, SmaCross)
+stats = bt.run(n1=10, n2=30)
+```
+
+<Note>
+  The backtest begins on the first bar where all declared indicators have non-NaN values. A strategy using a 200-bar moving average will not start trading until bar 201. This affects `Exposure Time`, `Duration`, and trade counts.
+</Note>
+
+### Return value
+
+`run()` returns a `pd.Series` with the following fields:
+
+<ResponseField name="Start" type="pd.Timestamp">
+  Datetime of the first data bar.
+</ResponseField>
+
+<ResponseField name="End" type="pd.Timestamp">
+  Datetime of the last data bar.
+</ResponseField>
+
+<ResponseField name="Duration" type="pd.Timedelta">
+  Total duration of the backtest period.
+</ResponseField>
+
+<ResponseField name="Exposure Time [%]" type="float">
+  Percentage of bars where at least one trade was active.
+</ResponseField>
+
+<ResponseField name="Equity Final [$]" type="float">
+  Final account equity at the end of the backtest.
+</ResponseField>
+
+<ResponseField name="Equity Peak [$]" type="float">
+  Maximum equity reached during the backtest.
+</ResponseField>
+
+<ResponseField name="Return [%]" type="float">
+  Total return on initial cash.
+</ResponseField>
+
+<ResponseField name="Buy & Hold Return [%]" type="float">
+  Return of a passive buy-and-hold strategy over the same period, for comparison.
+</ResponseField>
+
+<ResponseField name="Return (Ann.) [%]" type="float">
+  Annualized return.
+</ResponseField>
+
+<ResponseField name="Volatility (Ann.) [%]" type="float">
+  Annualized volatility of equity returns.
+</ResponseField>
+
+<ResponseField name="CAGR [%]" type="float">
+  Compound Annual Growth Rate.
+</ResponseField>
+
+<ResponseField name="Sharpe Ratio" type="float">
+  Risk-adjusted return relative to volatility (assumes risk-free rate of 0).
+</ResponseField>
+
+<ResponseField name="Sortino Ratio" type="float">
+  Like Sharpe, but penalizes only downside volatility.
+</ResponseField>
+
+<ResponseField name="Calmar Ratio" type="float">
+  Annualized return divided by maximum drawdown.
+</ResponseField>
+
+<ResponseField name="Alpha [%]" type="float">
+  Excess return over buy-and-hold.
+</ResponseField>
+
+<ResponseField name="Beta" type="float">
+  Sensitivity of strategy returns relative to the underlying asset.
+</ResponseField>
+
+<ResponseField name="Max. Drawdown [%]" type="float">
+  Largest peak-to-trough decline in equity, as a percentage.
+</ResponseField>
+
+<ResponseField name="Avg. Drawdown [%]" type="float">
+  Average drawdown across all drawdown periods.
+</ResponseField>
+
+<ResponseField name="Max. Drawdown Duration" type="pd.Timedelta">
+  Longest time spent in a drawdown.
+</ResponseField>
+
+<ResponseField name="Avg. Drawdown Duration" type="pd.Timedelta">
+  Average duration of drawdown periods.
+</ResponseField>
+
+<ResponseField name="# Trades" type="int">
+  Total number of completed trades.
+</ResponseField>
+
+<ResponseField name="Win Rate [%]" type="float">
+  Percentage of trades that were profitable.
+</ResponseField>
+
+<ResponseField name="Best Trade [%]" type="float">
+  Return of the single best trade.
+</ResponseField>
+
+<ResponseField name="Worst Trade [%]" type="float">
+  Return of the single worst trade.
+</ResponseField>
+
+<ResponseField name="Avg. Trade [%]" type="float">
+  Average return per trade.
+</ResponseField>
+
+<ResponseField name="Max. Trade Duration" type="pd.Timedelta">
+  Duration of the longest trade.
+</ResponseField>
+
+<ResponseField name="Avg. Trade Duration" type="pd.Timedelta">
+  Average duration per trade.
+</ResponseField>
+
+<ResponseField name="Profit Factor" type="float">
+  Ratio of gross profit to gross loss.
+</ResponseField>
+
+<ResponseField name="Expectancy [%]" type="float">
+  Average expected return per trade, accounting for win rate and average trade size.
+</ResponseField>
+
+<ResponseField name="SQN" type="float">
+  Van Tharp's System Quality Number. Values above 1.6 indicate a good system.
+</ResponseField>
+
+<ResponseField name="Kelly Criterion" type="float">
+  Optimal fraction of capital to risk per trade according to the Kelly formula.
+</ResponseField>
+
+<ResponseField name="_strategy" type="Strategy">
+  The strategy instance used in the run, including all parameter values.
+</ResponseField>
+
+<ResponseField name="_equity_curve" type="pd.DataFrame">
+  Full equity curve as a DataFrame, indexed by datetime.
+</ResponseField>
+
+<ResponseField name="_trades" type="pd.DataFrame">
+  DataFrame of all completed trades with entry/exit prices, sizes, P&L, and tags.
+</ResponseField>
+
+---
+
+## `Backtest.optimize()`
+
+```python
+Backtest.optimize(
+    *,
+    maximize='SQN',
+    method='grid',
+    max_tries=None,
+    constraint=None,
+    return_heatmap=False,
+    return_optimization=False,
+    random_state=None,
+    **kwargs
+) -> pd.Series | tuple
+```
+
+Search for the parameter combination that maximizes a performance metric. Pass strategy parameters as keyword arguments with lists of candidate values.
+
+```python
+best_stats = bt.optimize(
+    n1=[5, 10, 15],
+    n2=[10, 20, 40],
+    constraint=lambda p: p.n1 < p.n2,
+)
+```
+
+<ParamField path="**kwargs" type="list-like">
+  Strategy parameter names mapped to sequences of candidate values. The optimizer searches over combinations of these values.
+
+  ```python
+  bt.optimize(sma1=[5, 10, 15], sma2=[10, 20, 40])
+  ```
+</ParamField>
+
+<ParamField path="maximize" type="str | callable" default="'SQN'">
+  The metric to maximize. Either:
+
+  - A string key matching a field in the `run()` result series (e.g. `'Return [%]'`, `'Sharpe Ratio'`).
+  - A callable `func(stats: pd.Series) -> float` that accepts a `run()` result and returns a score. The higher the score, the better.
+</ParamField>
+
+<ParamField path="method" type="str" default="'grid'">
+  Optimization method:
+
+  - `'grid'` — exhaustive (or randomized if `max_tries` is set) search over the Cartesian product of all parameter combinations.
+  - `'sambo'` — model-based optimization using [SAMBO](https://sambo-optimization.github.io). Requires the `sambo` package (`pip install sambo`). Efficient for large parameter spaces.
+</ParamField>
+
+<ParamField path="max_tries" type="int | float | None" default="None">
+  Maximum number of strategy evaluations:
+
+  - `None` — exhaustive grid search (all combinations). For `method='sambo'`, defaults to `200`.
+  - `float` in `(0, 1]` — fraction of the full grid space to sample randomly.
+  - `int` — absolute maximum number of evaluations.
+</ParamField>
+
+<ParamField path="constraint" type="callable | None" default="None">
+  A function that accepts a dict-like object of parameter values and returns `True` if the combination is worth testing. Use this to prune invalid combinations.
+
+  ```python
+  constraint=lambda p: p.fast_period < p.slow_period
+  ```
+</ParamField>
+
+<ParamField path="return_heatmap" type="bool" default="false">
+  When `True`, the method returns a tuple `(stats, heatmap)` where `heatmap` is a `pd.Series` with a MultiIndex of all tested parameter combinations and their maximize scores. Use `backtesting.lib.plot_heatmaps()` to visualize.
+</ParamField>
+
+<ParamField path="return_optimization" type="bool" default="false">
+  When `True` and `method='sambo'`, also returns the raw `scipy.optimize.OptimizeResult` object for further inspection with SAMBO's plotting tools. Requires `return_heatmap=True` if you want all three return values.
+
+  <Warning>
+    `return_optimization=True` is only valid when `method='sambo'`.
+  </Warning>
+</ParamField>
+
+<ParamField path="random_state" type="int | None" default="None">
+  Integer seed for reproducible randomized grid search or SAMBO optimization.
+</ParamField>
+
+### Return value
+
+Depending on the flags set:
+
+| Flags | Returns |
+|---|---|
+| (default) | `pd.Series` — stats of the best run |
+| `return_heatmap=True` | `(pd.Series, pd.Series)` — best stats + heatmap |
+| `return_heatmap=True, return_optimization=True` | `(pd.Series, pd.Series, OptimizeResult)` |
+
+---
+
+## `Backtest.plot()`
+
+```python
+Backtest.plot(
+    *,
+    results=None,
+    filename=None,
+    plot_width=None,
+    plot_equity=True,
+    plot_return=False,
+    plot_pl=True,
+    plot_volume=True,
+    plot_drawdown=False,
+    plot_trades=True,
+    smooth_equity=False,
+    relative_equity=True,
+    superimpose=True,
+    resample=True,
+    reverse_indicators=False,
+    show_legend=True,
+    open_browser=True,
+)
+```
+
+Generate an interactive Bokeh HTML chart of the last backtest run.
+
+<ParamField path="results" type="pd.Series | None" default="None">
+  A specific result series from `run()` or `optimize()`. If `None`, the most recent `run()` result is used.
+</ParamField>
+
+<ParamField path="filename" type="str | None" default="None">
+  File path for the output HTML file. Defaults to a strategy/parameter-dependent filename in the current working directory.
+</ParamField>
+
+<ParamField path="plot_width" type="int | None" default="None">
+  Width of the chart in pixels. When `None`, the chart spans 100% of the browser width.
+</ParamField>
+
+<ParamField path="plot_equity" type="bool" default="true">
+  Show an equity curve section (cash plus open position value). Equivalent to `plot_return` plus the initial 100%.
+</ParamField>
+
+<ParamField path="plot_return" type="bool" default="false">
+  Show a cumulative return section. Equivalent to `plot_equity` minus the initial 100%.
+</ParamField>
+
+<ParamField path="plot_pl" type="bool" default="true">
+  Show a profit/loss indicator section.
+</ParamField>
+
+<ParamField path="plot_volume" type="bool" default="true">
+  Show a trade volume section.
+</ParamField>
+
+<ParamField path="plot_drawdown" type="bool" default="false">
+  Show a separate drawdown graph section.
+</ParamField>
+
+<ParamField path="plot_trades" type="bool" default="true">
+  Mark trade entry-to-exit spans on the chart with hash-marked tractor beams.
+</ParamField>
+
+<ParamField path="smooth_equity" type="bool" default="false">
+  Interpolate the equity curve between trade closing points, removing intra-trade volatility from the visual.
+</ParamField>
+
+<ParamField path="relative_equity" type="bool" default="true">
+  Label the equity axis with return percentages instead of absolute cash values.
+</ParamField>
+
+<ParamField path="superimpose" type="bool | str" default="true">
+  Overlay larger-timeframe candlesticks on the price chart. When `True`, the downsampling frequency is chosen automatically (monthly for daily data, daily for hourly, etc.). Pass a [Pandas offset string](https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#dateoffset-objects) like `'5min'` to override. Requires a datetime index.
+</ParamField>
+
+<ParamField path="resample" type="bool | str" default="true">
+  Resample the OHLC data to keep the Bokeh canvas under 10,000 candles for performance. Pass a Pandas offset string to force a specific frequency. Requires a datetime index.
+</ParamField>
+
+<ParamField path="reverse_indicators" type="bool" default="false">
+  Plot sub-chart indicators in reverse declaration order.
+</ParamField>
+
+<ParamField path="show_legend" type="bool" default="true">
+  Display labeled legends on each plot section.
+</ParamField>
+
+<ParamField path="open_browser" type="bool" default="true">
+  Open the generated HTML file in the default web browser after saving.
+</ParamField>
+
+---
+
+## Complete example
+
+```python
+import pandas as pd
+from backtesting import Backtest, Strategy
+from backtesting.lib import crossover
+from backtesting.test import GOOG
+import talib
+
+class SmaCross(Strategy):
+    n1 = 10
+    n2 = 20
+
+    def init(self):
+        self.sma1 = self.I(talib.SMA, self.data.Close, self.n1)
+        self.sma2 = self.I(talib.SMA, self.data.Close, self.n2)
+
+    def next(self):
+        if crossover(self.sma1, self.sma2):
+            self.buy()
+        elif crossover(self.sma2, self.sma1):
+            self.sell()
+
+# Initialize
+bt = Backtest(
+    GOOG,
+    SmaCross,
+    cash=10_000,
+    commission=0.002,
+)
+
+# Run a single backtest
+stats = bt.run()
+print(stats)
+
+# Optimize parameters
+best_stats, heatmap = bt.optimize(
+    n1=range(5, 30, 5),
+    n2=range(10, 70, 5),
+    constraint=lambda p: p.n1 < p.n2,
+    maximize='Sharpe Ratio',
+    return_heatmap=True,
+)
+print(best_stats['_strategy'])
+
+# Plot results
+bt.plot(smooth_equity=True, relative_equity=False)
+```

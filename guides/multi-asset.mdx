@@ -1,0 +1,167 @@
+---
+title: Multi-Asset Backtesting
+description: Run and optimize the same strategy across multiple instruments simultaneously using MultiBacktest.
+---
+
+`MultiBacktest` from `backtesting.lib` runs a single strategy against a list of OHLCV DataFrames in parallel, returning per-instrument statistics in a single `pd.DataFrame`. It is designed for comparing strategy performance across many instruments or asset classes.
+
+## `MultiBacktest` constructor
+
+```python
+from backtesting.lib import MultiBacktest
+
+btm = MultiBacktest(df_list, strategy_cls, **kwargs)
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `df_list` | List of OHLCV `pd.DataFrame` objects, one per instrument |
+| `strategy_cls` | The `Strategy` subclass to run on each instrument |
+| `**kwargs` | Additional keyword arguments forwarded to `Backtest.__init__()` (e.g. `cash`, `commission`, `margin`) |
+
+## Running across multiple instruments
+
+`MultiBacktest.run(**kwargs)` returns a `pd.DataFrame` where each column corresponds to one instrument (indexed 0, 1, 2, …) and each row is a stats key:
+
+```python
+from backtesting.lib import MultiBacktest
+from backtesting.test import EURUSD, BTCUSD, SmaCross
+
+btm = MultiBacktest([EURUSD, BTCUSD], SmaCross, cash=10_000, commission=.002)
+
+# Returns pd.DataFrame: rows = stat keys, columns = instrument index
+stats_df = btm.run(fast=10, slow=20)
+print(stats_df)
+```
+
+Keyword arguments to `run()` are forwarded to `Strategy` as parameter overrides — equivalent to calling `bt.run(fast=10, slow=20)` on each instrument individually.
+
+## Parallel execution
+
+Under the hood, `MultiBacktest.run()` uses Python's `multiprocessing` pool to distribute each instrument's backtest across available CPU cores:
+
+```python
+# Internally, MultiBacktest.run() uses:
+from . import Pool
+with Pool() as pool:
+    results = pool.imap(self._mp_task_run, ...)
+```
+
+No configuration is required — parallelism is automatic. Instruments with zero trades are returned as `None` columns in the result DataFrame.
+
+<Warning>
+  On Windows or when running inside Jupyter notebooks, place the `MultiBacktest.run()` call inside a `if __name__ == '__main__':` guard in scripts to avoid multiprocessing errors:
+
+  ```python
+  if __name__ == '__main__':
+      stats_df = btm.run()
+  ```
+</Warning>
+
+## Full example: two currency pairs
+
+```python
+from backtesting import Strategy
+from backtesting.lib import MultiBacktest, crossover
+from backtesting.test import EURUSD, BTCUSD, SMA
+
+
+class SmaCross(Strategy):
+    n1 = 10
+    n2 = 20
+
+    def init(self):
+        self.sma1 = self.I(SMA, self.data.Close, self.n1)
+        self.sma2 = self.I(SMA, self.data.Close, self.n2)
+
+    def next(self):
+        if crossover(self.sma1, self.sma2):
+            self.position.close()
+            self.buy()
+        elif crossover(self.sma2, self.sma1):
+            self.position.close()
+            self.sell()
+
+
+btm = MultiBacktest(
+    [EURUSD, BTCUSD],
+    SmaCross,
+    cash=10_000,
+    commission=.002
+)
+
+stats_df = btm.run(n1=10, n2=20)
+print(stats_df.T[['Equity Final [$]', 'Sharpe Ratio', '# Trades', 'Win Rate [%]']])
+```
+
+Example output:
+
+```text
+   Equity Final [$]  Sharpe Ratio  # Trades  Win Rate [%]
+0          11234.50          0.61        42         47.62
+1          18920.30          0.83        38         52.63
+```
+
+## Optimization across instruments
+
+`MultiBacktest.optimize(**kwargs)` returns a `pd.DataFrame` where each column is the heatmap Series from one instrument:
+
+```python
+heatmap_df = btm.optimize(
+    n1=range(5, 30, 5),
+    n2=range(10, 60, 5),
+    constraint=lambda p: p.n1 < p.n2,
+    maximize='Sharpe Ratio',
+    return_heatmap=True,
+    return_optimization=False
+)
+```
+
+<Note>
+  `MultiBacktest.optimize()` runs each instrument's optimization sequentially (since `Backtest.optimize()` already parallelizes internally). The `run()` method, by contrast, parallelizes across instruments.
+</Note>
+
+To aggregate heatmaps across instruments (e.g. find parameters that perform well on average):
+
+```python
+from backtesting.lib import plot_heatmaps
+
+# Average heatmap across all instruments
+combined_heatmap = heatmap_df.mean(axis=1)
+plot_heatmaps(combined_heatmap, agg='mean')
+```
+
+## Filtering results
+
+Instruments with zero trades produce `None` entries. Filter them out before analysis:
+
+```python
+stats_df = btm.run(n1=10, n2=20)
+
+# Drop instruments with no trades
+active = stats_df.dropna(axis=1)
+print(active.loc['Sharpe Ratio'].sort_values(ascending=False))
+```
+
+## Scaling to many instruments
+
+For larger universe backtests, pass a list of DataFrames loaded from files or a data provider:
+
+```python
+import pandas as pd
+from backtesting.lib import MultiBacktest
+
+tickers = ['AAPL', 'MSFT', 'GOOG', 'AMZN', 'TSLA']
+dataframes = [pd.read_csv(f'data/{t}.csv', index_col=0, parse_dates=True)
+              for t in tickers]
+
+btm = MultiBacktest(dataframes, SmaCross, cash=10_000, commission=.002)
+stats_df = btm.run(n1=10, n2=30)
+
+# Summary across all tickers
+print(stats_df.loc[['Equity Final [$]', 'Sharpe Ratio', 'Max. Drawdown [%]']])
+```
+
+<Tip>
+  `MultiBacktest` does not support different strategy parameters per instrument. If you need instrument-specific parameter sets, run individual `Backtest` instances in a loop or a `multiprocessing.Pool` manually.
+</Tip>

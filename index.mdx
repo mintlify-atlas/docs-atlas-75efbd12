@@ -1,97 +1,115 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Backtesting.py"
+description: "Backtest trading strategies in Python with a simple, blazing-fast framework."
 ---
 
-## Setting up
-
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get a working backtest running in under 5 minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="download" href="/installation">
+    Install via pip and set up your environment.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="book" href="/concepts/strategy">
+    Learn how Strategy, Backtest, and orders work together.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/backtest">
+    Full reference for every class, method, and parameter.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What is Backtesting.py?
 
-Everything you need to create world-class documentation.
+**Backtesting.py** is a Python framework for testing trading strategies against historical market data. You define a strategy by subclassing `Strategy`, load OHLCV price data into a `Backtest`, then call `.run()` to simulate trading and `.plot()` to visualize the results interactively.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+```python quickstart.py
+from backtesting import Backtest, Strategy
+from backtesting.lib import crossover
+from backtesting.test import SMA, GOOG
 
-## Need inspiration?
+class SmaCross(Strategy):
+    n1 = 10
+    n2 = 20
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+    def init(self):
+        price = self.data.Close
+        self.ma1 = self.I(SMA, price, self.n1)
+        self.ma2 = self.I(SMA, price, self.n2)
+
+    def next(self):
+        if crossover(self.ma1, self.ma2):
+            self.buy()
+        elif crossover(self.ma2, self.ma1):
+            self.sell()
+
+bt = Backtest(GOOG, SmaCross, commission=.002, exclusive_orders=True)
+stats = bt.run()
+bt.plot()
+```
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Fast execution" icon="bolt">
+    NumPy-powered engine simulates thousands of bars per second.
+  </Card>
+  <Card title="Built-in optimizer" icon="sliders">
+    Grid search or Bayesian optimization across any strategy parameters.
+  </Card>
+  <Card title="Interactive plots" icon="chart-line">
+    Bokeh-powered equity curves, drawdown charts, and trade markers.
+  </Card>
+  <Card title="Rich statistics" icon="chart-bar">
+    Sharpe, Sortino, Calmar, SQN, Kelly Criterion, CAGR, and more.
+  </Card>
+  <Card title="Full order types" icon="arrow-right-arrow-left">
+    Market, limit, stop-limit, stop-loss, and take-profit orders.
+  </Card>
+  <Card title="Indicator agnostic" icon="plug">
+    Works with TA-Lib, pandas-ta, NumPy, or any Python function.
+  </Card>
+  <Card title="Multiple time frames" icon="clock">
+    Combine signals from different resolutions in one strategy.
+  </Card>
+  <Card title="Composable strategies" icon="puzzle-piece">
+    Extend `SignalStrategy`, `TrailingStrategy`, or `FractionalBacktest`.
+  </Card>
+</CardGroup>
+
+## Performance results
+
+A complete backtest of a simple SMA crossover strategy on Google stock (2004–2013) produces detailed statistics in seconds:
+
+```text
+Start                     2004-08-19 00:00:00
+End                       2013-03-01 00:00:00
+Duration                   3116 days 00:00:00
+Exposure Time [%]                       94.27
+Equity Final [$]                     68935.12
+Return [%]                             589.35
+Buy & Hold Return [%]                  703.46
+Sharpe Ratio                             0.66
+Sortino Ratio                            1.30
+Max. Drawdown [%]                      -33.08
+# Trades                                   93
+Win Rate [%]                            53.76
+```
+
+## Supports any instrument
+
+Backtesting.py works with any asset class that has candlestick data — stocks, ETFs, forex pairs, cryptocurrencies, commodities, and futures. As long as your data has `Open`, `High`, `Low`, `Close` columns in a pandas DataFrame, you can backtest against it.
+
+<CardGroup cols={2}>
+  <Card title="Optimization guide" icon="magnifying-glass-chart" href="/guides/optimization">
+    Tune parameters with grid search and heatmaps.
+  </Card>
+  <Card title="Multiple time frames" icon="layer-group" href="/guides/multiple-timeframes">
+    Combine daily signals with intraday execution.
+  </Card>
+  <Card title="Machine learning" icon="brain" href="/guides/machine-learning">
+    Integrate ML models as trading signals.
+  </Card>
+  <Card title="Multi-asset" icon="bars" href="/guides/multi-asset">
+    Run parallel backtests across many instruments.
+  </Card>
+</CardGroup>

@@ -1,0 +1,322 @@
+---
+title: "Changelog"
+description: "Release history for backtesting.py — what's new, improved, and fixed in each version."
+---
+
+This page summarizes the major changes in each release of backtesting.py. For the full history, see the [CHANGELOG.md on GitHub](https://github.com/kernc/backtesting.py/blob/master/CHANGELOG.md).
+
+## 0.x.x (upcoming)
+
+In development. See the [master branch](https://github.com/kernc/backtesting.py) for unreleased changes.
+
+---
+
+## 0.6.5
+
+**Released: 2025-07-30**
+
+- Added a `Commission` column to `stats._trades` DataFrame.
+- Commission is now accounted for in `Trade.pl` and `Trade.pl_pct`.
+- **Plotting:** Long/short entry/exit triangles are back in the P&L section.
+- **Plotting:** Indicators declared with `plot=False, overlay=True` are now rendered in a muted style rather than hidden.
+
+**Bug fixes:**
+- Fixed commission calculation when specified as a relative amount.
+- Fixed a case where the SL value in `stats._trades` was occasionally cleared.
+- Ensured order size is always an integer to prevent rounding errors.
+- Fixed `functools.partial` objects that lack a `__module__` attribute in Python 3.9.
+
+---
+
+## 0.6.4
+
+**Released: 2025-03-30**
+
+**Bug fixes:**
+- Fixed optimization hanging on Windows when a `if __name__ == '__main__'` guard was missing.
+- Restored original price scale in `FractionalBacktest` plots.
+- Fixed `"'CAGR [%]' must match a key in pd.Series result of bt.run()"` error.
+- Fixed grid optimization on data with timezone-aware `DatetimeIndex`.
+
+---
+
+## 0.6.3
+
+**Released: 2025-03-11**
+
+**Enhancements:**
+- `backtesting.lib.TrailingStrategy` now supports setting the trailing stop-loss by percentage.
+- New `backtesting.lib.MultiBacktest` wrapper for multi-dataset backtesting.
+- `Backtest.run()` is now wrapped in `tqdm()` for progress reporting.
+- `lib.FractionalBacktest(fractional_unit=)` parameter renamed for clarity.
+- Added market alpha and market beta statistics.
+
+**Plot improvements:**
+- Trade duration lines are now shown in the P&L section.
+- Simplified P&L section using circular markers.
+- Trades are only plotted when at least one trade is present.
+- Indicator subplots use `desired_num_ticks=3` for cleaner axes.
+- Single legend item for indicators with a singular/default name.
+- OHLC candlestick series is now a togglable legend item.
+- Added `xwheel_pan` tool (activation-conditioned).
+- Reduced default height of indicator charts; overridable via `backtesting._plotting._INDICATOR_HEIGHT`.
+
+**Bug fixes:**
+- Fixed `Position.pl` and `Position.pl_pct` occasionally disagreeing in sign.
+- SL now always executes before TP when both are hit in the same bar.
+- Fixed `functools.partial` missing `__module__` attribute in Python 3.9.
+- Fixed stop-market and TP hit in the same bar.
+
+---
+
+## 0.6.2
+
+**Released: 2025-02-19**
+
+**Enhancements:**
+- Grid optimization now uses `mp.Pool` and `mp.shm.SharedMemory` for faster parallel execution.
+- New `backtesting.lib.FractionalBacktest` class supporting fractional share/unit trading.
+- `backtesting.__all__` defined for cleaner `from backtesting import *` usage and IDE suggestions.
+
+**Bug fixes:**
+- Fixed remaining issues with `trade_on_close=True`.
+- Fixed trades reported in reverse chronological order when `finalize_trades=True`.
+- Fixed crosshair not linked across subplots.
+- Fixed a Windows-specific error with `datetime_arr.astype(np.int64)`.
+
+---
+
+## 0.6.1
+
+**Released: 2025-02-04**
+
+- Switched to `joblib.Parallel` for optimization. This significantly improves performance on Windows and has minimal impact on other platforms.
+
+---
+
+## 0.6.0
+
+**Released: 2025-02-04**
+
+<Warning>
+  **Breaking change:** `Backtest(commission=)` now applies the commission **twice per trade** (at both entry and exit). Use the new `Backtest(spread=)` parameter for costs applied once at entry only.
+</Warning>
+
+**Enhancements:**
+- New `Backtest(spread=)` parameter for spread/slippage applied at entry only.
+- Commissions are now shown as `"Commissions [$]"` in trade stats.
+- Multiple names can be assigned to vector indicators.
+- `stats['trades']` now includes SL and TP columns.
+- `stats['trades']` now includes entry and exit indicator values.
+- New `finalize_trades=` option in `Backtest.run()` to close open trades at backtest end.
+
+**Bug fixes:**
+- Fixed Sharpe ratio calculation with a non-zero risk-free rate.
+- Price comparisons now use `<=` / `>=` to align with TradingView behavior.
+- Reduced memory footprint during optimization.
+- Fixed annualized statistics with weekly or monthly data.
+- Fixed `AssertionError` when cancelling orders in a loop.
+- Fixed plot not rendering in VSCode Jupyter.
+- Buy & Hold duration now matches trading duration.
+- Fixed `bt.plot(resample=True)` with categorical indicators.
+
+---
+
+## 0.5.0
+
+**Released: 2025-01-21**
+
+**Enhancements:**
+- New `Backtest.optimize(method="sambo")` using [SAMBO](https://sambo-optimization.github.io), replacing the previous `method="skopt"`.
+- New `'CAGR [%]'` (compound annual growth rate) statistic in run results.
+
+**Bug fixes:**
+- Fixed "stop-loss executed at a higher than market price" error.
+- Fixed a bug with `buy()`/`sell()` when `size=0`.
+- Fixed `Order.__repr__` when `Order.tag` is non-numeric.
+
+---
+
+## 0.4.0
+
+**Released: 2025-01-21**
+
+**Enhancements:**
+- New `'Kelly Criterion'` statistic.
+- New `Backtest.plot(plot_trades=)` parameter to toggle trade markers.
+- New `Order.tag` for tracking individual orders and trades.
+
+---
+
+## 0.3.3
+
+**Released: 2021-12-13**
+
+- Fixed random data generation with recent NumPy versions.
+- Fixed Pandas deprecation warnings.
+- Replaced Bokeh 3.0 deprecated APIs.
+
+---
+
+## 0.3.2
+
+**Released: 2021-08-03**
+
+- New `backtesting.lib.compute_stats()` method for computing strategy performance outside of `Backtest.run()`.
+- Improved plotting speed and optimization performance on large datasets.
+- Commission constraints now support negative values (market-maker rebates).
+- `Backtest.plot()` now returns the Bokeh figure object for further customization.
+
+---
+
+## 0.3.1
+
+**Released: 2021-01-25**
+
+- Avoided `pandas.Index` deprecation warnings.
+- Fixed `Backtest.plot(show_legend=False)` compatibility with recent Bokeh.
+
+---
+
+## 0.3.0
+
+**Released: 2020-11-24**
+
+- Faster model-based optimization using scikit-optimize.
+- Optional randomized grid search for faster optimization.
+- Annualized Return, Volatility, Sharpe, Sortino, and Calmar statistics.
+- Open trades are now automatically closed at the end of a backtest run.
+- New `Backtest.plot(plot_return=)` parameter, analogous to `plot_equity=`.
+- Updated Expectancy formula.
+
+---
+
+## 0.2.4
+
+**Released: 2020-10-27**
+
+- New `lib.random_ohlc_data()` OHLC data generator for testing.
+- Equity is now aggregated on `'last'` during plot resampling.
+- Updated Buy & Hold stats calculation to be long-only.
+
+---
+
+## 0.2.3
+
+**Released: 2020-09-10**
+
+- Linked hover crosshairs across all subplots.
+- Clicking a legend glyph now toggles indicator visibility.
+- Fixed Bokeh tooltip showing literal `&nbsp;`.
+
+---
+
+## 0.2.2
+
+**Released: 2020-08-21**
+
+Internal maintenance release.
+
+---
+
+## 0.2.1
+
+**Released: 2020-08-03**
+
+- Added `Trade.entry_time` and `Trade.exit_time` attributes.
+- Fixed SL/TP hit on the same day a position was opened.
+
+---
+
+## 0.2.0
+
+**Released: 2020-07-15**
+
+<Warning>
+  **Breaking change:** Introduced a new `Order` / `Trade` / `Position` API. Strategies using the old API need to be updated.
+</Warning>
+
+- New `Order`, `Trade`, and `Position` API.
+- New pandas accessors `.df` and `.s` on `Strategy.data`.
+- New `Backtest(exclusive_orders=)` parameter: closes previous trades on new orders.
+- New `Backtest(hedging=)` parameter: makes FIFO trade closing optional.
+- New `bt.plot(reverse_indicators=)` parameter.
+- New `bt.plot(resample=)` with automatic downsampling for large datasets.
+- Geometric mean return used in Sharpe/Sortino computation.
+
+---
+
+## 0.1.8
+
+**Released: 2020-07-14**
+
+- Added Profit Factor statistic.
+
+---
+
+## 0.1.7
+
+**Released: 2020-03-23**
+
+- Fixed support for 2-D indicators.
+- Fixed tooltip Date field formatting with Bokeh 2.0.0.
+
+---
+
+## 0.1.6
+
+**Released: 2020-03-09**
+
+Internal maintenance release.
+
+---
+
+## 0.1.5
+
+**Released: 2020-03-02**
+
+Internal maintenance release.
+
+---
+
+## 0.1.4
+
+**Released: 2020-02-25**
+
+Internal maintenance release.
+
+---
+
+## 0.1.3
+
+**Released: 2020-02-24**
+
+- Show number of trades on OHLC plot legend.
+- Added `agg=` parameter to `lib.resample_apply()`.
+- Reset position price and related state after closing a position.
+- Fixed pandas insertion error on Windows.
+
+---
+
+## 0.1.2
+
+**Released: 2019-09-23**
+
+- Plot now spans 100% of browser width.
+
+---
+
+## 0.1.1
+
+**Released: 2019-09-23**
+
+- Avoided multiprocessing issues on Windows.
+- Added scatter plot indicator support.
+
+---
+
+## 0.1.0
+
+**Released: 2019-01-15**
+
+Initial public release of backtesting.py.

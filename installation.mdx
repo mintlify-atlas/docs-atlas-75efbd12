@@ -1,0 +1,128 @@
+---
+title: Installation
+description: Install backtesting.py and its dependencies, and verify your environment is ready to run backtests.
+---
+
+## Requirements
+
+Backtesting.py requires **Python 3.9 or later** and the following packages, which are installed automatically:
+
+| Package | Minimum version | Purpose |
+|---|---|---|
+| `numpy` | 1.17.0 | Numerical array operations and indicator computation |
+| `pandas` | 0.25.1 | DataFrame-based OHLCV data handling and results |
+| `bokeh` | 3.0.0 (not 3.0.x or 3.2.x) | Interactive HTML chart output |
+
+## Install with pip
+
+The primary installation method is pip:
+
+```bash
+pip install backtesting
+```
+
+This installs backtesting.py and all required dependencies into your active Python environment.
+
+### Virtual environment (recommended)
+
+Using a virtual environment keeps your project dependencies isolated:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install backtesting
+```
+
+### Google Colab
+
+In a Google Colab notebook, prefix the install command with `!`:
+
+```bash
+!pip install backtesting
+```
+
+Then restart the runtime when prompted, or call `importlib.reload` on the relevant modules.
+
+## Verify the installation
+
+Confirm the package is installed and importable:
+
+```python
+import backtesting
+print(backtesting.__version__)
+```
+
+To run a minimal end-to-end check using the built-in test data:
+
+```python
+from backtesting import Backtest, Strategy
+from backtesting.test import GOOG
+
+class BuyAndHold(Strategy):
+    def init(self):
+        pass
+
+    def next(self):
+        if not self.position:
+            self.buy()
+
+bt = Backtest(GOOG, BuyAndHold)
+stats = bt.run()
+print(stats['Return [%]'])
+```
+
+If this prints a number without errors, your installation is working correctly.
+
+## Optional dependencies
+
+### Jupyter
+
+Running backtests inside a Jupyter notebook is a common workflow. Install Jupyter separately if you do not already have it:
+
+```bash
+pip install notebook          # classic notebook interface
+# or
+pip install jupyterlab        # JupyterLab interface
+```
+
+<Tip>
+  In a Jupyter notebook, `bt.plot()` renders the interactive Bokeh chart inline in the cell output. In a standalone Python script, it opens the chart in your default browser.
+</Tip>
+
+### Optimisation extras
+
+The built-in `bt.optimize()` method supports Bayesian optimisation via `sambo` and displays a progress bar via `tqdm`. These are optional but recommended if you plan to use parameter optimisation:
+
+```bash
+pip install sambo tqdm ipywidgets
+```
+
+### Indicator libraries
+
+Backtesting.py is indicator-library-agnostic. Any library that produces NumPy arrays works. Popular choices include:
+
+```bash
+pip install ta-lib          # TA-Lib (requires the C library; see TA-Lib docs)
+pip install pandas-ta       # pandas-ta
+pip install tulipy          # Tulipy
+pip install scikit-learn    # scikit-learn (for ML-based indicators)
+```
+
+You do not need to install any of these to use backtesting.py itself.
+
+## Plotting in different environments
+
+| Environment | Behaviour of `bt.plot()` |
+|---|---|
+| Jupyter notebook | Renders the interactive chart inline in the cell. |
+| Standalone script | Opens the chart in your default web browser. |
+| Google Colab | Renders inline; use `bt.plot(open_browser=False)` if the browser tab causes issues. |
+| Headless / CI | Pass `filename="output.html"` to write the chart to a file without opening a browser. |
+
+<Warning>
+  Bokeh versions 3.0.x and 3.2.x are explicitly excluded due to known incompatibilities. If you see Bokeh-related errors after install, run `pip install "bokeh>=3.1,!=3.2.*"` to force a compatible version.
+</Warning>
+
+## Next steps
+
+Once installed, follow the [quickstart guide](/quickstart) to run your first backtest in a few lines of code.

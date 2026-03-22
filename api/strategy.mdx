@@ -1,0 +1,382 @@
+---
+title: 'Strategy'
+description: 'Abstract base class for defining trading strategies in backtesting.py.'
+sidebarTitle: 'Strategy'
+keywords: ['strategy', 'trading', 'indicators', 'buy', 'sell', 'orders', 'trades', 'position']
+---
+
+The `Strategy` class is the abstract base class all trading strategies must extend. Override `init()` to set up indicators and `next()` to implement per-bar trading logic.
+
+```python
+from backtesting import Strategy
+```
+
+## Defining a strategy
+
+Subclass `Strategy` and implement the two abstract methods:
+
+```python
+from backtesting import Strategy
+from backtesting.lib import crossover
+import talib
+
+class SmaCross(Strategy):
+    # Class-level parameters — override via Backtest.run(n1=...) or optimize()
+    n1 = 10
+    n2 = 20
+
+    def init(self):
+        # Declare indicators once, in full
+        self.sma1 = self.I(talib.SMA, self.data.Close, self.n1)
+        self.sma2 = self.I(talib.SMA, self.data.Close, self.n2)
+
+    def next(self):
+        # Called for each new bar
+        if crossover(self.sma1, self.sma2):
+            self.buy()
+        elif crossover(self.sma2, self.sma1):
+            self.position.close()
+```
+
+---
+
+## Abstract methods
+
+### `Strategy.init()`
+
+```python
+def init(self) -> None
+```
+
+Called once before the backtest begins. Use this method to:
+
+- Declare all indicators with `self.I()`.
+- Precompute any data that can be vectorized up front.
+
+<Note>
+  If your strategy extends a composable base strategy from `backtesting.lib`, you must call `super().init()` at the top of your override.
+</Note>
+
+<Warning>
+  Indicators that front-pad warm-up values with `NaN` (e.g. a 200-bar moving average) will delay the start of trading until all indicators have non-NaN values. This affects exposure time and trade counts.
+</Warning>
+
+### `Strategy.next()`
+
+```python
+def next(self) -> None
+```
+
+Called once per bar as new OHLCV data becomes available. This is where trading decisions are made. Inside `next()`:
+
+- `self.data` arrays are sliced to the current bar (the last element is always the most recent value).
+- Indicator arrays are similarly sliced.
+- Call `self.buy()`, `self.sell()`, `self.position.close()`, or `trade.close()` to act.
+
+<Note>
+  If your strategy extends a composable base strategy from `backtesting.lib`, you must call `super().next()` at the top of your override.
+</Note>
+
+---
+
+## `Strategy.I()` — declare an indicator
+
+```python
+Strategy.I(func, *args, name=None, plot=True, overlay=None, color=None, scatter=False, **kwargs) -> np.ndarray
+```
+
+Declare an indicator. The indicator array is computed once (in `init()`) and then revealed bar-by-bar during `next()`, just like `data`.
+
+<ParamField path="func" type="callable" required>
+  A function that returns an array (or tuple of arrays) of the same length as `data`. Common sources include TA-Lib functions, pandas rolling methods, or any custom vectorized function.
+
+  ```python
+  self.sma = self.I(talib.SMA, self.data.Close, 20)
+  ```
+</ParamField>
+
+<ParamField path="*args">
+  Positional arguments passed through to `func`.
+</ParamField>
+
+<ParamField path="**kwargs">
+  Keyword arguments passed through to `func`.
+</ParamField>
+
+<ParamField path="name" type="str | list[str] | None" default="None">
+  Name(s) shown in the plot legend. When `None`, the name is derived from the function name and its arguments. For indicators that return multiple arrays (e.g. MACD), pass a list of strings matching the number of arrays returned.
+</ParamField>
+
+<ParamField path="plot" type="bool" default="true">
+  Whether to include this indicator in the `plot()` output.
+</ParamField>
+
+<ParamField path="overlay" type="bool | None" default="None">
+  Controls indicator placement on the chart:
+
+  - `True` — overlay on the main price/candlestick chart (suitable for moving averages).
+  - `False` — draw in a separate sub-panel below the price chart.
+  - `None` (default) — auto-detect: overlays if the majority of values fall within 30%–140% of the Close price.
+</ParamField>
+
+<ParamField path="color" type="str | None" default="None">
+  Hex RGB color (e.g. `'#3498db'`) or an [X11 color name](https://en.wikipedia.org/wiki/X11_color_names) (e.g. `'royalblue'`). When `None`, the next available color is assigned automatically.
+</ParamField>
+
+<ParamField path="scatter" type="bool" default="false">
+  When `True`, plot the indicator as scatter points (circles) instead of a connected line.
+</ParamField>
+
+**Returns** `np.ndarray` — the full indicator array. During `next()`, this is automatically sliced to the current bar length.
+
+---
+
+## `Strategy.buy()` and `Strategy.sell()`
+
+Both methods place a new order and return an `Order` object. They share the same parameters.
+
+```python
+Strategy.buy(*, size=_FULL_EQUITY, limit=None, stop=None, sl=None, tp=None, tag=None) -> Order
+Strategy.sell(*, size=_FULL_EQUITY, limit=None, stop=None, sl=None, tp=None, tag=None) -> Order
+```
+
+<Note>
+  Unless `trade_on_close=True`, market orders fill at the **next bar's open**. Limit, stop-limit, and stop-market orders fill when their price conditions are first met.
+</Note>
+
+<ParamField path="size" type="float" default="full equity">
+  Order size. Two interpretations:
+
+  - **Fraction** `(0, 1)` — fraction of current available equity (cash + unrealized P&L − used margin). E.g. `0.5` uses half of available funds.
+  - **Whole number** `≥ 1` — absolute number of units to trade.
+
+  The default (`_FULL_EQUITY`) is approximately `1 - epsilon`, meaning "use all available equity."
+</ParamField>
+
+<ParamField path="limit" type="float | None" default="None">
+  Limit price. When set, creates a [limit order](https://www.investopedia.com/terms/l/limitorder.asp) that fills only if the price reaches `limit`. When `None`, creates a market order.
+</ParamField>
+
+<ParamField path="stop" type="float | None" default="None">
+  Stop price. When set, creates a [stop order](https://www.investopedia.com/terms/s/stoporder.asp). Combining `stop` and `limit` creates a stop-limit order.
+</ParamField>
+
+<ParamField path="sl" type="float | None" default="None">
+  Stop-loss price. When the resulting trade's price reaches `sl`, a contingent stop-market order is placed to close the trade. You can adjust this later via `trade.sl`.
+
+  For long orders: `sl` must be below the entry price.
+  For short orders: `sl` must be above the entry price.
+</ParamField>
+
+<ParamField path="tp" type="float | None" default="None">
+  Take-profit price. When the resulting trade's price reaches `tp`, a contingent limit order is placed to close the trade. You can adjust this later via `trade.tp`.
+
+  For long orders: `tp` must be above the entry price.
+  For short orders: `tp` must be below the entry price.
+</ParamField>
+
+<ParamField path="tag" type="any" default="None">
+  Arbitrary value (string, integer, dict, etc.) attached to the order and its resulting trade. Use for tracking, grouping, or conditional logic in analysis.
+
+  ```python
+  self.buy(tag='breakout-signal')
+  # Later:
+  for trade in self.closed_trades:
+      if trade.tag == 'breakout-signal':
+          ...
+  ```
+</ParamField>
+
+**Returns** an `Order` object.
+
+<Warning>
+  `self.sell(size=0.1)` does **not** close an existing `self.buy(size=0.1)` trade unless `exclusive_orders=True` is set, or prices are exactly equal and there are no spread/commission costs. To exit a position explicitly, use `Position.close()` or `Trade.close()`.
+</Warning>
+
+---
+
+## Properties
+
+### `Strategy.data`
+
+```python
+@property
+data -> _Data
+```
+
+The current price data, sliced to the current bar in `next()` and full-length in `init()`.
+
+`_Data` provides:
+
+- **OHLCV arrays**: `data.Open`, `data.High`, `data.Low`, `data.Close`, `data.Volume` — NumPy arrays where `[-1]` is the most recent value.
+- **`.s` accessor**: `data.Close.s` returns the column as a `pd.Series` with the datetime index.
+- **`.df` accessor**: `data.df` returns the full current slice as a `pd.DataFrame`.
+- **`.pip`**: The smallest meaningful price increment (one pip), useful for setting SL/TP offsets.
+- **`.index`**: The datetime index of the data.
+- **Custom columns**: Any extra columns passed in the original DataFrame are accessible by attribute (e.g. `data.Sentiment`).
+
+```python
+def next(self):
+    current_close = self.data.Close[-1]
+    previous_close = self.data.Close[-2]
+    close_series = self.data.Close.s  # pd.Series
+```
+
+### `Strategy.equity`
+
+```python
+@property
+equity -> float
+```
+
+Current account equity: initial cash plus all open position unrealized P&L.
+
+```python
+def next(self):
+    if self.equity < 5000:
+        self.position.close()  # cut losses
+```
+
+### `Strategy.position`
+
+```python
+@property
+position -> Position
+```
+
+The current aggregate position. Evaluates to `False` when flat (no open trades).
+
+| Property | Type | Description |
+|---|---|---|
+| `position.size` | `float` | Total position size in units. Negative for net short. |
+| `position.pl` | `float` | Unrealized profit/loss in cash units. |
+| `position.pl_pct` | `float` | Unrealized profit/loss as a percentage. |
+| `position.is_long` | `bool` | `True` when net long. |
+| `position.is_short` | `bool` | `True` when net short. |
+
+`position.close(portion=1.0)` closes the given fraction of all active trades.
+
+```python
+def next(self):
+    if self.position:
+        self.position.close(0.5)  # close half the position
+```
+
+### `Strategy.orders`
+
+```python
+@property
+orders -> tuple[Order, ...]
+```
+
+All pending (not yet filled) orders. Each `Order` exposes:
+
+- `order.size` — signed size (negative for shorts)
+- `order.limit`, `order.stop` — price conditions
+- `order.sl`, `order.tp` — contingent SL/TP prices
+- `order.tag` — tracking tag
+- `order.is_long`, `order.is_short`, `order.is_contingent` — booleans
+- `order.cancel()` — cancel this order
+
+### `Strategy.trades`
+
+```python
+@property
+trades -> tuple[Trade, ...]
+```
+
+All currently active (open) trades. Each `Trade` exposes:
+
+| Property | Type | Description |
+|---|---|---|
+| `trade.size` | `int` | Units held; negative for shorts. |
+| `trade.entry_price` | `float` | Price at which the trade was opened. |
+| `trade.entry_bar` | `int` | Bar index of entry. |
+| `trade.entry_time` | `pd.Timestamp` | Datetime of entry. |
+| `trade.exit_price` | `float \| None` | Exit price (None if still open). |
+| `trade.exit_bar` | `int \| None` | Bar index of exit. |
+| `trade.exit_time` | `pd.Timestamp \| None` | Datetime of exit. |
+| `trade.pl` | `float` | Unrealized P&L in cash units. |
+| `trade.pl_pct` | `float` | Unrealized P&L as a percentage. |
+| `trade.value` | `float` | Total position value (units × price). |
+| `trade.sl` | `float \| None` | Writable — get/set the stop-loss price. |
+| `trade.tp` | `float \| None` | Writable — get/set the take-profit price. |
+| `trade.tag` | `any` | Tracking tag inherited from the originating order. |
+| `trade.is_long` | `bool` | `True` for long trades. |
+| `trade.is_short` | `bool` | `True` for short trades. |
+
+`trade.close(portion=1.0)` places an order to close the given fraction of the trade.
+
+### `Strategy.closed_trades`
+
+```python
+@property
+closed_trades -> tuple[Trade, ...]
+```
+
+All settled (closed) trades. Same fields as `trades`, with `exit_price`, `exit_bar`, and `exit_time` populated.
+
+---
+
+## Complete example
+
+This example demonstrates indicators, bracket orders (SL/TP), trade management, and use of `tag`:
+
+```python
+import talib
+from backtesting import Backtest, Strategy
+from backtesting.lib import crossover
+from backtesting.test import GOOG
+
+class BracketStrategy(Strategy):
+    atr_period = 14
+    sma_period = 50
+    risk_pct = 0.02  # risk 2% of equity per trade
+
+    def init(self):
+        close = self.data.Close
+
+        self.sma = self.I(talib.SMA, close, self.sma_period,
+                          name='SMA({sma_period})', overlay=True, color='royalblue')
+        self.atr = self.I(talib.ATR,
+                          self.data.High, self.data.Low, close,
+                          self.atr_period,
+                          name='ATR', overlay=False)
+
+    def next(self):
+        price = self.data.Close[-1]
+        atr = self.atr[-1]
+
+        # Entry: price crosses above SMA and we are flat
+        if crossover(self.data.Close, self.sma) and not self.position:
+            sl_price = price - 2 * atr
+            tp_price = price + 3 * atr
+
+            # Size by risk: risk_pct of equity divided by per-unit risk
+            unit_risk = price - sl_price
+            size = int(self.equity * self.risk_pct / unit_risk)
+            if size >= 1:
+                self.buy(size=size, sl=sl_price, tp=tp_price, tag='sma-cross')
+
+        # Exit: price crosses below SMA
+        elif crossover(self.sma, self.data.Close) and self.position.is_long:
+            self.position.close()
+
+    def on_bar_close(self):
+        # Adjust trailing stop on active trades
+        for trade in self.trades:
+            new_sl = self.data.Close[-1] - 2 * self.atr[-1]
+            if new_sl > (trade.sl or 0):
+                trade.sl = new_sl
+
+bt = Backtest(GOOG, BracketStrategy, cash=50_000, commission=0.002)
+stats = bt.run()
+print(stats[['Return [%]', 'Sharpe Ratio', 'Max. Drawdown [%]', '# Trades']])
+
+# Inspect individual trades
+trades_df = stats['_trades']
+print(trades_df.head())
+
+# Plot with drawdown panel visible
+bt.plot(plot_drawdown=True, smooth_equity=True)
+```

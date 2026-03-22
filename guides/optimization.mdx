@@ -1,0 +1,253 @@
+---
+title: Parameter Optimization
+description: Optimize your strategy parameters using grid search or model-based optimization, and visualize results with heatmaps.
+---
+
+backtesting.py provides built-in parameter optimization via `Backtest.optimize()`. You can search exhaustively over a grid of parameter values or use model-based optimization (SAMBO) to find near-optimal parameters with far fewer evaluations.
+
+## Defining optimizable parameters
+
+Parameters are declared as **class variables** on the strategy. They serve as the default values during a plain `bt.run()` and become the search space during `bt.optimize()`.
+
+```python
+from backtesting import Strategy
+from backtesting.lib import crossover
+from backtesting.test import SMA
+
+class SmaCross(Strategy):
+    # Class variables = optimizable parameters
+    n1 = 10   # fast MA period (default)
+    n2 = 20   # slow MA period (default)
+
+    def init(self):
+        self.sma1 = self.I(SMA, self.data.Close, self.n1)
+        self.sma2 = self.I(SMA, self.data.Close, self.n2)
+
+    def next(self):
+        if crossover(self.sma1, self.sma2):
+            self.position.close()
+            self.buy()
+        elif crossover(self.sma2, self.sma1):
+            self.position.close()
+            self.sell()
+```
+
+## Running an optimization
+
+Call `Backtest.optimize()` and pass each parameter name as a keyword argument with a list or range of values to try:
+
+```python
+from backtesting import Backtest
+from backtesting.test import GOOG
+
+bt = Backtest(GOOG, SmaCross, cash=10_000, commission=.002)
+
+stats = bt.optimize(
+    n1=range(5, 30, 5),
+    n2=range(10, 70, 5),
+    maximize='Equity Final [$]',
+    constraint=lambda p: p.n1 < p.n2
+)
+print(stats._strategy)  # SmaCross(n1=10,n2=15)
+```
+
+### The `maximize` parameter
+
+`maximize` selects the objective to maximize. It accepts:
+
+- A **string key** matching any entry in the `stats` Series returned by `bt.run()` — e.g. `'Equity Final [$]'`, `'Sharpe Ratio'`, `'SQN'`, `'Win Rate [%]'`
+- A **callable** that receives the full `stats` Series and returns a float — useful for custom objectives
+
+The default is `'SQN'` (Van Tharp's System Quality Number).
+
+```python
+# Maximize Sharpe Ratio
+stats = bt.optimize(n1=range(5, 30), n2=range(10, 70),
+                    maximize='Sharpe Ratio')
+
+# Custom objective: maximize profit factor, penalize low trade count
+stats = bt.optimize(
+    n1=range(5, 30), n2=range(10, 70),
+    maximize=lambda s: s['Profit Factor'] if s['# Trades'] >= 10 else 0
+)
+```
+
+### The `constraint` parameter
+
+Pass a callable to `constraint` to skip invalid parameter combinations. The function receives a dict-like object whose attributes are the parameter values:
+
+```python
+# n1 must be strictly less than n2
+stats = bt.optimize(
+    n1=range(5, 30, 5),
+    n2=range(10, 70, 5),
+    constraint=lambda p: p.n1 < p.n2
+)
+```
+
+For strategies with more parameters, constraints can be chained:
+
+```python
+stats = bt.optimize(
+    n1=range(10, 110, 10),
+    n2=range(20, 210, 20),
+    n_enter=range(15, 35, 5),
+    n_exit=range(10, 25, 5),
+    constraint=lambda p: p.n_exit < p.n_enter < p.n1 < p.n2,
+    maximize='Equity Final [$]'
+)
+```
+
+## Getting the heatmap
+
+Pass `return_heatmap=True` to receive a `pd.Series` (indexed by a MultiIndex of all tried parameter combinations) alongside the best-run stats:
+
+```python
+stats, heatmap = bt.optimize(
+    n1=range(5, 30, 5),
+    n2=range(10, 70, 5),
+    maximize='Equity Final [$]',
+    constraint=lambda p: p.n1 < p.n2,
+    return_heatmap=True
+)
+
+print(heatmap)
+# n1  n2
+# 5   10    12483.5
+#     15    13201.0
+# ...
+
+# Top 3 parameter combinations
+print(heatmap.sort_values().iloc[-3:])
+```
+
+### Visualizing heatmaps with `plot_heatmaps()`
+
+For strategies with more than two parameters, use `backtesting.lib.plot_heatmaps()` to render interactive 2D heatmaps of every parameter pair:
+
+```python
+from backtesting.lib import plot_heatmaps
+
+plot_heatmaps(heatmap, agg='mean')
+```
+
+`agg` controls how the n-dimensional heatmap is projected onto each 2D pair. Accepts any aggregation pandas understands: `'mean'`, `'max'`, `'median'`, etc.
+
+You can also produce the 2D projection manually with pandas:
+
+```python
+import matplotlib.pyplot as plt
+
+hm = heatmap.groupby(['n1', 'n2']).mean().unstack()
+hm = hm[::-1]  # flip for conventional heatmap orientation
+
+fig, ax = plt.subplots()
+im = ax.imshow(hm, cmap='viridis')
+ax.set_xticks(range(len(hm.columns)), labels=hm.columns)
+ax.set_yticks(range(len(hm)),         labels=hm.index)
+ax.set_xlabel('n2')
+ax.set_ylabel('n1')
+fig.colorbar(im, ax=ax)
+plt.show()
+```
+
+## Limiting iterations with `max_tries`
+
+For large parameter spaces, pass `max_tries` to cap the number of evaluations:
+
+```python
+# Test at most 200 randomly sampled combinations
+stats, heatmap = bt.optimize(
+    n1=range(10, 110, 10),
+    n2=range(20, 210, 20),
+    n_enter=range(15, 35, 5),
+    n_exit=range(10, 25, 5),
+    constraint=lambda p: p.n_exit < p.n_enter < p.n1 < p.n2,
+    maximize='Equity Final [$]',
+    max_tries=200,
+    random_state=0,
+    return_heatmap=True
+)
+```
+
+- If `max_tries` is an **integer**, it is the absolute number of runs.
+- If `max_tries` is a **float** between 0 and 1, it is the fraction of the full grid to sample.
+- Set `random_state` to an integer for reproducible random sampling.
+
+<Note>
+  When `method='grid'` and `max_tries` is set, the optimizer randomly samples from the admissible parameter space. The full grid is only evaluated when `max_tries` is omitted.
+</Note>
+
+## Model-based optimization with SAMBO
+
+For large parameter spaces, exhaustive grid search is computationally expensive. The SAMBO optimizer builds a surrogate model of the objective function and evaluates only the most promising parameter combinations:
+
+```python
+# pip install sambo
+
+stats, heatmap, optimize_result = bt.optimize(
+    n1=[10, 100],       # For method='sambo', pass interval endpoints
+    n2=[20, 200],
+    n_enter=[10, 40],
+    n_exit=[10, 30],
+    constraint=lambda p: p.n_exit < p.n_enter < p.n1 < p.n2,
+    maximize='Equity Final [$]',
+    method='sambo',
+    max_tries=40,
+    random_state=0,
+    return_heatmap=True,
+    return_optimization=True
+)
+```
+
+The `optimize_result` object (returned when `return_optimization=True`) can be passed to SAMBO's plotting tools:
+
+```python
+from sambo.plot import plot_objective, plot_evaluations
+
+names = ['n1', 'n2', 'n_enter', 'n_exit']
+plot_objective(optimize_result, names=names, estimator='et')
+plot_evaluations(optimize_result, names=names)
+```
+
+<Tip>
+  SAMBO runs sequentially and does not benefit from multi-core execution in the same way as grid search. However, it can reach a comparable or better optimum using far fewer evaluations — making it ideal when each backtest run is expensive (large datasets, many indicators).
+</Tip>
+
+## Parallel execution
+
+Grid optimization automatically parallelizes across all available CPU cores using Python's `multiprocessing` under the hood. No configuration is required — just run `bt.optimize()` and it will distribute work across cores.
+
+<Warning>
+  On Windows and in interactive notebooks, multiprocessing requires the optimization call to be inside a `if __name__ == '__main__':` guard when running as a script:
+
+  ```python
+  if __name__ == '__main__':
+      stats = bt.optimize(n1=range(5, 30), n2=range(10, 70))
+  ```
+</Warning>
+
+## Interpreting results
+
+After optimization, retrieve the best parameter values from the strategy instance:
+
+```python
+stats, heatmap = bt.optimize(
+    n1=range(5, 30, 5),
+    n2=range(10, 70, 5),
+    maximize='Equity Final [$]',
+    constraint=lambda p: p.n1 < p.n2,
+    return_heatmap=True
+)
+
+# Best parameter values
+print(stats._strategy)       # SmaCross(n1=10,n2=15)
+print(stats['Equity Final [$]'])
+print(stats['Sharpe Ratio'])
+```
+
+Use the heatmap to assess **robustness**: if the optimal parameter region is surrounded by similarly high-performing neighbors, the strategy is more likely to generalize out-of-sample. Isolated peaks are a sign of overfitting.
+
+<Warning>
+  Optimization on in-sample data will always find a best combination — but that does not mean it will perform well out-of-sample. Always validate optimized strategies on unseen data and take steps to avoid [overfitting](https://en.wikipedia.org/wiki/Overfitting).
+</Warning>

@@ -1,0 +1,356 @@
+---
+title: Orders, trades, and positions
+description: Understand the Order, Trade, and Position objects — their properties, lifecycle, and how to use them to manage risk and track results inside a strategy.
+---
+
+Three objects model the state of your strategy's market activity: `Order`, `Trade`, and `Position`. Understanding them lets you write precise entry, exit, and risk management logic.
+
+## Lifecycle overview
+
+<Steps>
+  <Step title="Place an order">
+    Call `self.buy()` or `self.sell()` in `next()`. This creates an `Order` object and queues it for execution.
+
+    ```python
+    order = self.buy(size=100, sl=95.0, tp=115.0)
+    ```
+  </Step>
+  <Step title="Order fills">
+    On a subsequent bar, the broker evaluates market conditions. If the order's price conditions are met, it fills and becomes a `Trade`. Contingent SL/TP orders are created automatically.
+  </Step>
+  <Step title="Manage the trade">
+    The `Trade` object is available in `self.trades`. Adjust stop-loss and take-profit in real time, or close the trade manually.
+
+    ```python
+    for trade in self.trades:
+        trade.sl = self.data.Close[-1] * 0.98
+    ```
+  </Step>
+  <Step title="Trade closes">
+    When a trade is closed (by SL/TP, `Trade.close()`, or `Position.close()`), it moves to `self.closed_trades` and its P&L is settled.
+  </Step>
+</Steps>
+
+---
+
+## Order
+
+An `Order` is created by `self.buy()` or `self.sell()` and waits in the broker's queue until its price conditions are met or it is canceled. All orders are **Good Till Canceled** — they remain active until they fill or you explicitly cancel them.
+
+### Properties
+
+<ParamField path="size" type="float">
+  Order size (negative for short orders). If between 0 and 1, it is a fraction of available equity. If 1 or greater, it is an absolute number of units.
+</ParamField>
+
+<ParamField path="limit" type="float | None">
+  Limit price. `None` for market orders. A long limit order fills when the price falls to or below this value; a short limit order fills when the price rises to or above it.
+</ParamField>
+
+<ParamField path="stop" type="float | None">
+  Stop price that activates the order. When hit, the order becomes a market order (stop-market) or a limit order (stop-limit, if `limit` is also set). `None` once the stop has been triggered.
+</ParamField>
+
+<ParamField path="sl" type="float | None">
+  Stop-loss price. After this order fills, a contingent stop-market order is automatically placed at this price to close the resulting trade.
+</ParamField>
+
+<ParamField path="tp" type="float | None">
+  Take-profit price. After this order fills, a contingent limit order is automatically placed at this price to close the resulting trade.
+</ParamField>
+
+<ParamField path="tag" type="any">
+  Arbitrary tracking value inherited by the resulting `Trade`.
+</ParamField>
+
+<ParamField path="is_long" type="bool">
+  `True` if the order size is positive (a buy order).
+</ParamField>
+
+<ParamField path="is_short" type="bool">
+  `True` if the order size is negative (a sell order).
+</ParamField>
+
+<ParamField path="is_contingent" type="bool">
+  `True` for OCO bracket orders (SL/TP) placed automatically upon a trade. These orders are canceled when their parent trade closes.
+</ParamField>
+
+### Methods
+
+**`order.cancel()`** — Remove the order from the queue. Also cancels contingent SL/TP bracket if applicable.
+
+```python
+def next(self):
+    # Cancel all pending long orders
+    for order in self.orders:
+        if order.is_long:
+            order.cancel()
+```
+
+### Order types
+
+<Tabs>
+  <Tab title="Market order">
+    No `limit` or `stop` set. Fills on the next bar's open (or current bar's close if `trade_on_close=True`).
+
+    ```python
+    self.buy()                   # market buy at next open
+    self.sell(size=100)          # market sell, 100 units
+    ```
+  </Tab>
+  <Tab title="Limit order">
+    Set `limit` only. Fills when the market touches the limit price.
+
+    ```python
+    # Buy if price drops to 95.00
+    self.buy(limit=95.00)
+
+    # Sell if price rises to 115.00
+    self.sell(limit=115.00)
+    ```
+  </Tab>
+  <Tab title="Stop-market order">
+    Set `stop` only. Becomes a market order once the stop price is hit.
+
+    ```python
+    # Buy breakout above 105.00
+    self.buy(stop=105.00)
+
+    # Sell breakdown below 95.00
+    self.sell(stop=95.00)
+    ```
+  </Tab>
+  <Tab title="Stop-limit order">
+    Set both `stop` and `limit`. Activates at the stop, then waits for the limit.
+
+    ```python
+    # Activate at 105.00, then fill at limit 104.50
+    self.buy(stop=105.00, limit=104.50)
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  For **long orders**, price ordering must hold: `SL < limit/stop/market_price < TP`. For **short orders**: `TP < limit/stop/market_price < SL`. Violations raise a `ValueError`.
+</Note>
+
+---
+
+## Trade
+
+A `Trade` is created when an `Order` fills. Active trades are available in `self.trades`; settled trades are in `self.closed_trades`.
+
+### Properties
+
+<ParamField path="size" type="int">
+  Trade volume in units. Negative for short trades.
+</ParamField>
+
+<ParamField path="entry_price" type="float">
+  Price at which the trade was opened.
+</ParamField>
+
+<ParamField path="exit_price" type="float | None">
+  Price at which the trade was closed. `None` if the trade is still active.
+</ParamField>
+
+<ParamField path="entry_bar" type="int">
+  Integer bar index when the trade was entered.
+</ParamField>
+
+<ParamField path="exit_bar" type="int | None">
+  Integer bar index when the trade was exited. `None` if still active.
+</ParamField>
+
+<ParamField path="entry_time" type="pd.Timestamp | int">
+  Timestamp (or bar integer) of trade entry.
+</ParamField>
+
+<ParamField path="exit_time" type="pd.Timestamp | int | None">
+  Timestamp (or bar integer) of trade exit. `None` if still active.
+</ParamField>
+
+<ParamField path="pl" type="float">
+  Profit (positive) or loss (negative) in cash units. Commissions are included only after the trade is closed.
+</ParamField>
+
+<ParamField path="pl_pct" type="float">
+  Profit or loss as a percentage of the entry price, net of commissions.
+</ParamField>
+
+<ParamField path="value" type="float">
+  Total trade value in cash: `abs(size) × current_price`.
+</ParamField>
+
+<ParamField path="is_long" type="bool">
+  `True` if the trade is long.
+</ParamField>
+
+<ParamField path="is_short" type="bool">
+  `True` if the trade is short.
+</ParamField>
+
+<ParamField path="sl" type="float | None">
+  Current stop-loss price. **Writable** — assign a new value to move the stop, or assign `None` to cancel it.
+</ParamField>
+
+<ParamField path="tp" type="float | None">
+  Current take-profit price. **Writable** — assign a new value to move the target, or assign `None` to cancel it.
+</ParamField>
+
+<ParamField path="tag" type="any">
+  Arbitrary value inherited from the order that opened this trade.
+</ParamField>
+
+### Methods
+
+**`trade.close(portion=1.)`** — Place a market order to close `portion` of the trade at the next available price. `portion` must be between 0 and 1.
+
+```python
+def next(self):
+    for trade in self.trades:
+        if trade.pl_pct > 0.05:
+            trade.close()       # close fully
+        elif trade.pl_pct < -0.02:
+            trade.close(0.5)    # close half
+```
+
+### Managing SL and TP
+
+SL and TP are stored as contingent orders on the trade. You can read and modify them at any time in `next()`:
+
+```python
+def next(self):
+    for trade in self.trades:
+        # Trail the stop-loss as price moves up
+        new_sl = self.data.Close[-1] * 0.98
+        if trade.sl is None or new_sl > trade.sl:
+            trade.sl = new_sl
+
+        # Move take-profit to lock in more profit
+        trade.tp = self.data.Close[-1] * 1.05
+
+        # Cancel the take-profit
+        trade.tp = None
+```
+
+<Note>
+  Assigning `trade.sl` or `trade.tp` creates or replaces the existing contingent bracket order. Assigning `None` cancels it. The underlying `Order` is managed automatically.
+</Note>
+
+### Tagging trades
+
+Tags let you track orders and trades through their lifecycle:
+
+```python
+def next(self):
+    if signal_a:
+        self.buy(tag='signal_a')
+    if signal_b:
+        self.buy(tag='signal_b')
+
+    # Filter active trades by tag
+    signal_a_trades = [t for t in self.trades if t.tag == 'signal_a']
+```
+
+---
+
+## Position
+
+`self.position` is the aggregate of all currently active trades. It can be used in boolean context: `if self.position:` is `True` when any trade is open.
+
+### Properties
+
+<ParamField path="size" type="float">
+  Net position size in units, summed across all active trades. Positive for net long, negative for net short, zero for flat.
+</ParamField>
+
+<ParamField path="pl" type="float">
+  Aggregate unrealized profit or loss in cash across all active trades.
+</ParamField>
+
+<ParamField path="pl_pct" type="float">
+  Aggregate unrealized P&L as a percentage of total invested capital.
+</ParamField>
+
+<ParamField path="is_long" type="bool">
+  `True` if net position size is positive.
+</ParamField>
+
+<ParamField path="is_short" type="bool">
+  `True` if net position size is negative.
+</ParamField>
+
+### Methods
+
+**`position.close(portion=1.)`** — Close `portion` of every active trade. Equivalent to calling `trade.close(portion)` on each trade in `self.trades`.
+
+```python
+def next(self):
+    # Close everything
+    self.position.close()
+
+    # Close 50% of all active trades
+    self.position.close(0.5)
+```
+
+---
+
+## FIFO position closing
+
+By default (`hedging=False`), placing a trade in the opposite direction automatically closes existing trades in FIFO (First In, First Out) order before opening the new trade.
+
+```python
+# hedging=False (default): buy() after being short closes the short first
+bt = Backtest(data, MyStrategy)             # hedging=False
+
+# hedging=True: simultaneous longs and shorts are allowed
+bt = Backtest(data, MyStrategy, hedging=True)
+```
+
+<Warning>
+  `self.sell(size=0.1)` does **not** close an existing `self.buy(size=0.1)` trade unless `exclusive_orders=True`, or both trades were opened at the same price with zero spread and commission. Use `Trade.close()` or `Position.close()` to explicitly exit.
+</Warning>
+
+## Exclusive orders mode
+
+With `exclusive_orders=True`, each new call to `self.buy()` or `self.sell()` automatically:
+
+1. Cancels all pending non-contingent orders.
+2. Closes all open trades.
+3. Opens the new trade.
+
+This enforces a single-position-at-a-time regime and simplifies signal-following strategies:
+
+```python
+bt = Backtest(data, MyStrategy, exclusive_orders=True)
+```
+
+```python
+def next(self):
+    if crossover(self.ma1, self.ma2):
+        self.buy()   # automatically closes any short
+    elif crossover(self.ma2, self.ma1):
+        self.sell()  # automatically closes any long
+```
+
+## Good-Till-Canceled semantics
+
+All orders placed via `self.buy()` and `self.sell()` are **Good Till Canceled**. They remain in the queue across multiple bars until one of the following occurs:
+
+- The price condition is met and the order fills.
+- You call `order.cancel()` explicitly.
+- A new order is placed with `exclusive_orders=True`, which cancels all pending non-contingent orders.
+- The broker cancels the order due to insufficient margin (a warning is emitted).
+
+```python
+def next(self):
+    # Place a limit order — it stays active until filled or canceled
+    if not self.orders:
+        order = self.buy(limit=self.data.Close[-1] * 0.99)
+
+    # Cancel if price has moved far away
+    for order in self.orders:
+        if self.data.Close[-1] > order.limit * 1.02:
+            order.cancel()
+```

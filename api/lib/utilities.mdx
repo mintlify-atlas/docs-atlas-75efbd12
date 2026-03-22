@@ -1,0 +1,455 @@
+---
+title: 'Utilities'
+description: 'Helper functions and constants from backtesting.lib for signal detection, statistical analysis, and data generation.'
+sidebarTitle: 'Utilities'
+keywords: ['crossover', 'cross', 'barssince', 'quantile', 'resample_apply', 'compute_stats', 'plot_heatmaps', 'random_ohlc_data', 'OHLCV_AGG', 'TRADES_AGG']
+---
+
+The `backtesting.lib` module provides utility functions for common signal detection, quantile analysis, multi-timeframe resampling, statistical recomputation, and synthetic data generation.
+
+```python
+from backtesting.lib import (
+    crossover, cross, barssince, quantile,
+    resample_apply, compute_stats, plot_heatmaps,
+    random_ohlc_data, OHLCV_AGG, TRADES_AGG
+)
+```
+
+---
+
+## `crossover(series1, series2)`
+
+```python
+crossover(series1: Sequence, series2: Sequence) -> bool
+```
+
+Returns `True` if `series1` just crossed **above** `series2` on the most recent bar. Specifically, checks that `series1[-2] < series2[-2]` and `series1[-1] > series2[-1]`.
+
+<ParamField path="series1" type="pd.Series | np.ndarray | float" required>
+  First data series. Accepts a pandas `Series`, NumPy array, or a scalar (which is treated as a constant).
+</ParamField>
+
+<ParamField path="series2" type="pd.Series | np.ndarray | float" required>
+  Second data series. Same types accepted as `series1`.
+</ParamField>
+
+<ResponseField name="returns" type="bool">
+  `True` if `series1` just crossed above `series2`. Returns `False` if the series is too short (fewer than 2 elements).
+</ResponseField>
+
+```python
+def next(self):
+    if crossover(self.sma_fast, self.sma_slow):
+        self.buy()
+```
+
+<Note>
+  Use `cross()` if you want to detect a crossover in either direction (above or below).
+</Note>
+
+---
+
+## `cross(series1, series2)`
+
+```python
+cross(series1: Sequence, series2: Sequence) -> bool
+```
+
+Returns `True` if `series1` and `series2` just crossed in **either direction** (above or below). Equivalent to `crossover(series1, series2) or crossover(series2, series1)`.
+
+<ParamField path="series1" type="pd.Series | np.ndarray | float" required>
+  First data series.
+</ParamField>
+
+<ParamField path="series2" type="pd.Series | np.ndarray | float" required>
+  Second data series.
+</ParamField>
+
+<ResponseField name="returns" type="bool">
+  `True` if the two series just crossed in either direction.
+</ResponseField>
+
+```python
+def next(self):
+    if cross(self.data.Close, self.sma):
+        # Close crossed the SMA — either bullish or bearish
+        self.position.close()
+```
+
+---
+
+## `barssince(condition, default=np.inf)`
+
+```python
+barssince(condition: Sequence[bool], default=np.inf) -> int
+```
+
+Returns the number of bars that have elapsed since `condition` was last `True`. If `condition` has never been `True`, returns `default`.
+
+<ParamField path="condition" type="Sequence[bool]" required>
+  A boolean sequence (e.g. the result of a comparison against a data array). The most recent bar is the last element.
+</ParamField>
+
+<ParamField path="default" type="int | float" default="np.inf">
+  Value to return if `condition` has never been `True`.
+</ParamField>
+
+<ResponseField name="returns" type="int | float">
+  Number of bars since `condition` was last `True`, or `default` if it never was.
+</ResponseField>
+
+```python
+def next(self):
+    # How many bars ago did Close exceed Open?
+    bars_ago = barssince(self.data.Close > self.data.Open)
+    # bars_ago == 3 means 3 bars have passed since the last bullish bar
+    if bars_ago < 5:
+        self.buy()
+```
+
+<Note>
+  The condition sequence is evaluated over the full history up to the current bar. When used inside `Strategy.next()`, this is automatically the slice seen so far.
+</Note>
+
+---
+
+## `quantile(series, quantile=None)`
+
+```python
+quantile(series: Sequence, quantile: float | None = None)
+```
+
+Two modes of operation depending on whether `quantile` is provided:
+
+- **Rank mode** (`quantile=None`): returns the quantile **rank** of the last value in `series` relative to all prior values. Result is a float between 0 and 1.
+- **Value mode** (`quantile` is a float 0–1): returns the **value** of `series` at the given quantile (equivalent to a percentile, but in `[0, 1]` scale).
+
+<ParamField path="series" type="Sequence" required>
+  The data series to analyze. Typically a slice of a price array.
+</ParamField>
+
+<ParamField path="quantile" type="float | None" default="None">
+  When `None`, returns the rank of the last value. When a float between 0 and 1, returns the value at that quantile. To convert from percentile notation, divide by 100 (e.g. 10th percentile → `0.1`).
+</ParamField>
+
+<ResponseField name="returns" type="float">
+  Quantile rank (0–1) of the last value, or the value at the requested quantile. Returns `np.nan` if the series is too short.
+</ResponseField>
+
+```python
+def next(self):
+    # What quantile rank is the current close among the last 20 closes?
+    rank = quantile(self.data.Close[-20:])
+    # rank close to 1.0 means price is near its 20-bar high
+
+    # What price level is the 10th percentile of the last 20 closes?
+    low_threshold = quantile(self.data.Close[-20:], 0.1)
+```
+
+---
+
+## `resample_apply(rule, func, series, *args, agg=None, **kwargs)`
+
+```python
+resample_apply(
+    rule: str,
+    func: Callable | None,
+    series: pd.Series | pd.DataFrame | _Array,
+    *args,
+    agg: str | dict | None = None,
+    **kwargs
+)
+```
+
+Applies `func` (such as an indicator) to `series` after resampling it to the time frame specified by `rule`. When called from inside `Strategy.init()`, the result is automatically wrapped in `self.I()` so it behaves like any other indicator.
+
+<ParamField path="rule" type="str" required>
+  A [Pandas offset string](http://pandas.pydata.org/pandas-docs/stable/timeseries.html#offset-aliases) specifying the target time frame (e.g. `'D'` for daily, `'W'` for weekly, `'4H'` for four-hourly).
+</ParamField>
+
+<ParamField path="func" type="callable | None" required>
+  The indicator function to apply to the resampled series. Pass `None` to skip applying a function and just resample.
+</ParamField>
+
+<ParamField path="series" type="pd.Series | pd.DataFrame | Strategy.data array" required>
+  The input data series to resample. Must have a `DatetimeIndex`. You can pass a `Strategy.data.*` array (e.g. `self.data.Close`) — it will be converted to a `pd.Series` automatically.
+</ParamField>
+
+<ParamField path="*args">
+  Additional positional arguments passed to `func` after the resampled series.
+</ParamField>
+
+<ParamField path="agg" type="str | dict | None" default="None">
+  Aggregation function used when grouping bars into the target time frame. Defaults to `OHLCV_AGG` for DataFrames and `'last'` for Series (or the appropriate OHLCV rule if the series name matches a column in `OHLCV_AGG`).
+</ParamField>
+
+<ParamField path="**kwargs">
+  Additional keyword arguments passed to `func`.
+</ParamField>
+
+<ResponseField name="returns" type="np.ndarray">
+  An indicator array aligned to the original data index, forward-filled from the resampled time frame. When called from `Strategy.init()`, the array is wrapped with `self.I()` automatically.
+</ResponseField>
+
+```python
+from backtesting import Backtest, Strategy
+from backtesting.lib import resample_apply
+from backtesting.test import EURUSD
+import talib
+
+class MultiTimeframeSma(Strategy):
+    def init(self):
+        # Apply SMA(10) on daily bars, even if self.data is hourly
+        self.daily_sma = resample_apply(
+            'D', talib.SMA, self.data.Close, 10, plot=False
+        )
+
+    def next(self):
+        if self.data.Close[-1] > self.daily_sma[-1]:
+            self.buy()
+        elif self.data.Close[-1] < self.daily_sma[-1]:
+            self.position.close()
+
+bt = Backtest(EURUSD, MultiTimeframeSma)
+stats = bt.run()
+```
+
+<Warning>
+  `resample_apply` requires the input series to have a `DatetimeIndex`. If your data uses a range index, this function will not work correctly.
+</Warning>
+
+---
+
+## `compute_stats(*, stats, data, trades=None, risk_free_rate=0.)`
+
+```python
+compute_stats(
+    *,
+    stats: pd.Series,
+    data: pd.DataFrame,
+    trades: pd.DataFrame = None,
+    risk_free_rate: float = 0.
+) -> pd.Series
+```
+
+Recomputes strategy performance metrics, optionally on a subset of trades. Useful for computing separate statistics for long-only and short-only trade subsets.
+
+<ParamField path="stats" type="pd.Series" required>
+  A statistics series as returned by `Backtest.run()`. Used to obtain the equity curve, strategy instance, and full trade list.
+</ParamField>
+
+<ParamField path="data" type="pd.DataFrame" required>
+  The OHLC DataFrame that was used in the original `Backtest`. Must be the same data that produced `stats`.
+</ParamField>
+
+<ParamField path="trades" type="pd.DataFrame | None" default="None">
+  A subset of `stats._trades` to compute stats for (e.g. only rows where `Size > 0` for long trades). When `None`, all trades in `stats._trades` are used.
+</ParamField>
+
+<ParamField path="risk_free_rate" type="float" default="0.0">
+  Annual risk-free rate used in the Sharpe and Sortino ratio calculations.
+</ParamField>
+
+<ResponseField name="returns" type="pd.Series">
+  A performance statistics series with the same fields as `Backtest.run()`, computed over the provided trade subset.
+</ResponseField>
+
+```python
+from backtesting import Backtest
+from backtesting.lib import compute_stats
+from backtesting.test import GOOG, SmaCross
+
+stats = Backtest(GOOG, SmaCross).run()
+
+# Separate long and short trade statistics
+long_trades  = stats._trades[stats._trades.Size > 0]
+short_trades = stats._trades[stats._trades.Size < 0]
+
+long_stats  = compute_stats(stats=stats, data=GOOG, trades=long_trades,  risk_free_rate=0.02)
+short_stats = compute_stats(stats=stats, data=GOOG, trades=short_trades, risk_free_rate=0.02)
+
+print(long_stats[['Return [%]', 'Sharpe Ratio', '# Trades']])
+print(short_stats[['Return [%]', 'Sharpe Ratio', '# Trades']])
+```
+
+---
+
+## `plot_heatmaps(heatmap, agg='max', *, ncols=3, plot_width=1200, filename='', open_browser=True)`
+
+```python
+plot_heatmaps(
+    heatmap: pd.Series,
+    agg: str | Callable = 'max',
+    *,
+    ncols: int = 3,
+    plot_width: int = 1200,
+    filename: str = '',
+    open_browser: bool = True
+)
+```
+
+Plots an interactive grid of 2D heatmaps, one for every pair of parameters in `heatmap`. Used for visualizing optimization results across multiple parameter dimensions.
+
+<ParamField path="heatmap" type="pd.Series" required>
+  A `pd.Series` as returned by `Backtest.optimize(return_heatmap=True)`. The index is a MultiIndex of all tested parameter combinations; values are the optimization scores.
+</ParamField>
+
+<ParamField path="agg" type="str | callable" default="'max'">
+  Aggregation function used to project n-dimensional (n > 2) heatmap data onto 2D slices. Accepts any value that pandas `.agg()` accepts (e.g. `'max'`, `'mean'`, `np.median`).
+</ParamField>
+
+<ParamField path="ncols" type="int" default="3">
+  Number of heatmap columns in the grid layout.
+</ParamField>
+
+<ParamField path="plot_width" type="int" default="1200">
+  Total width of the combined heatmap grid in pixels.
+</ParamField>
+
+<ParamField path="filename" type="str" default="''">
+  Output HTML file path. When empty, a default filename is generated in the current directory.
+</ParamField>
+
+<ParamField path="open_browser" type="bool" default="true">
+  When `True`, the generated HTML file is opened automatically in the default web browser.
+</ParamField>
+
+```python
+from backtesting import Backtest
+from backtesting.lib import plot_heatmaps
+from backtesting.test import GOOG, SmaCross
+
+bt = Backtest(GOOG, SmaCross)
+best_stats, heatmap = bt.optimize(
+    n1=range(5, 30, 5),
+    n2=range(10, 70, 5),
+    constraint=lambda p: p.n1 < p.n2,
+    maximize='Sharpe Ratio',
+    return_heatmap=True,
+)
+
+plot_heatmaps(heatmap, agg='mean')
+```
+
+---
+
+## `random_ohlc_data(example_data, *, frac=1., random_state=None)`
+
+```python
+random_ohlc_data(
+    example_data: pd.DataFrame,
+    *,
+    frac: float = 1.,
+    random_state: int | None = None
+) -> Generator[pd.DataFrame, None, None]
+```
+
+Returns an infinite generator of random OHLC DataFrames with statistical properties (mean, variance, autocorrelation) similar to `example_data`. Each call to `next()` on the generator yields a new independently sampled DataFrame.
+
+Useful for Monte Carlo simulations, robustness testing, and significance testing.
+
+<ParamField path="example_data" type="pd.DataFrame" required>
+  A DataFrame with `Open`, `High`, `Low`, and `Close` columns used as the reference distribution. Must include all four OHLCV columns.
+</ParamField>
+
+<ParamField path="frac" type="float" default="1.0">
+  Fraction of `example_data` rows to sample per generated DataFrame. Values greater than 1 oversample (with replacement), producing a longer series.
+</ParamField>
+
+<ParamField path="random_state" type="int | None" default="None">
+  Integer seed for reproducibility. Pass the same seed to get identical generated sequences.
+</ParamField>
+
+<ResponseField name="returns" type="Generator[pd.DataFrame, None, None]">
+  An infinite generator. Each `next()` call returns a new random OHLC DataFrame with the same index as `example_data`.
+</ResponseField>
+
+```python
+from backtesting import Backtest
+from backtesting.lib import random_ohlc_data
+from backtesting.test import EURUSD, SmaCross
+
+# Create generator
+ohlc_gen = random_ohlc_data(EURUSD, random_state=42)
+
+# Run 100 Monte Carlo simulations
+results = []
+for _ in range(100):
+    random_data = next(ohlc_gen)
+    stats = Backtest(random_data, SmaCross).run()
+    results.append(stats['Return [%]'])
+
+import numpy as np
+print(f"Median return across 100 random datasets: {np.median(results):.2f}%")
+```
+
+<Tip>
+  Use `random_ohlc_data` together with `compute_stats` to isolate whether your strategy's edge is real or a product of overfitting to a specific market regime.
+</Tip>
+
+---
+
+## Constants
+
+### `OHLCV_AGG`
+
+```python
+OHLCV_AGG: OrderedDict
+```
+
+An `OrderedDict` mapping standard OHLCV column names to their corresponding aggregation functions. Used with `pd.DataFrame.resample(...).agg(OHLCV_AGG)` to correctly downsample price data.
+
+```python
+OHLCV_AGG = OrderedDict([
+    ('Open',   'first'),
+    ('High',   'max'),
+    ('Low',    'min'),
+    ('Close',  'last'),
+    ('Volume', 'sum'),
+])
+```
+
+**Example usage:**
+
+```python
+from backtesting.lib import OHLCV_AGG
+
+# Resample hourly data to daily OHLCV
+daily = df.resample('D', label='right').agg(OHLCV_AGG).dropna()
+```
+
+### `TRADES_AGG`
+
+```python
+TRADES_AGG: OrderedDict
+```
+
+An `OrderedDict` mapping trades DataFrame column names to aggregation functions. Designed for use with `stats._trades` to aggregate trade records over time windows.
+
+```python
+TRADES_AGG = OrderedDict([
+    ('Size',        'sum'),
+    ('EntryBar',    'first'),
+    ('ExitBar',     'last'),
+    ('EntryPrice',  'mean'),
+    ('ExitPrice',   'mean'),
+    ('PnL',         'sum'),
+    ('ReturnPct',   'mean'),
+    ('EntryTime',   'first'),
+    ('ExitTime',    'last'),
+    ('Duration',    'sum'),
+])
+```
+
+**Example usage:**
+
+```python
+from backtesting.lib import TRADES_AGG
+
+# Aggregate trades by exit day
+daily_trades = (
+    stats['_trades']
+    .resample('1D', on='ExitTime', label='right')
+    .agg(TRADES_AGG)
+)
+```

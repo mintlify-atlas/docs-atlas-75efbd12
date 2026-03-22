@@ -1,0 +1,312 @@
+---
+title: "FAQ"
+description: "Answers to the most common questions about backtesting.py — data loading, commissions, orders, optimization, and more."
+---
+
+<AccordionGroup>
+
+  <Accordion title="How do I load my own data?">
+    Pass a `pandas.DataFrame` with a `DatetimeIndex` and columns named `Open`, `High`, `Low`, and `Close`. A `Volume` column is optional.
+
+    ```python
+    import pandas as pd
+    from backtesting import Backtest, Strategy
+
+    data = pd.read_csv('my_data.csv', index_col='Date', parse_dates=True)
+    # Ensure required columns exist
+    # data.columns -> ['Open', 'High', 'Low', 'Close', 'Volume']
+
+    bt = Backtest(data, MyStrategy)
+    stats = bt.run()
+    ```
+
+    Column names are case-sensitive. The index must be a `DatetimeIndex` sorted in ascending order. Any extra columns are accessible inside your strategy via `self.data.df`.
+  </Accordion>
+
+  <Accordion title="Why does my strategy start trading late?">
+    Indicators computed over a lookback window produce `NaN` values for the first *N−1* bars. backtesting.py skips those bars automatically, so `next()` is only called once all indicators have a valid (non-NaN) value.
+
+    For example, if you declare an SMA with period 200, `next()` won't be called until bar 201:
+
+    ```python
+    class MyStrategy(Strategy):
+        def init(self):
+            self.sma = self.I(SMA, self.data.Close, 200)
+
+        def next(self):
+            # This runs starting from bar 201
+            if self.data.Close[-1] > self.sma[-1]:
+                self.buy()
+    ```
+
+    This is intentional — it prevents look-ahead bias caused by acting on incomplete indicator values. If you have multiple indicators, the warmup period equals the longest one.
+  </Accordion>
+
+  <Accordion title="What commission formats are supported?">
+    The `commission=` parameter of `Backtest` accepts three formats:
+
+    **Float (relative):** A fraction of the trade value applied at both entry and exit.
+
+    ```python
+    bt = Backtest(data, MyStrategy, commission=0.002)  # 0.2% per side
+    ```
+
+    **Tuple (fixed + relative):** A two-element tuple `(fixed, relative)` where the fixed amount is in cash units.
+
+    ```python
+    bt = Backtest(data, MyStrategy, commission=(1.0, 0.0005))  # $1 + 0.05% per side
+    ```
+
+    **Callable:** A function that receives `(price, size)` and returns the total commission for that fill.
+
+    ```python
+    def my_commission(price, size):
+        return max(1.0, abs(size) * price * 0.001)
+
+    bt = Backtest(data, MyStrategy, commission=my_commission)
+    ```
+
+    <Note>
+      Since version 0.6.0, commission is applied **twice per trade** — once at entry and once at exit. For a cost applied only at entry (e.g., spread/slippage), use the `spread=` parameter instead.
+    </Note>
+  </Accordion>
+
+  <Accordion title="How do I trade fractional shares or Bitcoin?">
+    Use `backtesting.lib.FractionalBacktest`, which is a drop-in replacement for `Backtest` that supports non-integer position sizes.
+
+    ```python
+    from backtesting.lib import FractionalBacktest
+
+    bt = FractionalBacktest(data, MyStrategy, commission=0.001)
+    stats = bt.run()
+    ```
+
+    You can control the minimum tradeable unit with the `fractional_unit=` parameter:
+
+    ```python
+    bt = FractionalBacktest(data, MyStrategy, fractional_unit=0.00001)  # satoshi-level
+    ```
+
+    This is useful for crypto, forex, or any instrument where positions are not constrained to whole numbers.
+  </Accordion>
+
+  <Accordion title="How do I close only part of a position?">
+    Pass a fraction between 0 and 1 to `Trade.close()` or `Position.close()`.
+
+    ```python
+    def next(self):
+        if self.trades:
+            # Close half of the most recent trade
+            self.trades[-1].close(0.5)
+
+        # Or close half of the entire position
+        self.position.close(0.5)
+    ```
+
+    A fraction of `1.0` (the default) closes the full trade or position. You can call `close()` multiple times to scale out of a position incrementally.
+  </Accordion>
+
+  <Accordion title="How do I avoid look-ahead bias?">
+    Follow the two-method pattern strictly:
+
+    - **`init()`** — precompute all indicators over the *full* dataset. This is safe because the framework controls what is visible in `next()`.
+    - **`next()`** — make all trading decisions. Data arrays grow bar-by-bar here; `self.data.Close[-1]` is always the current bar's close, and future data is not accessible.
+
+    ```python
+    class MyStrategy(Strategy):
+        def init(self):
+            # Computed over the full series — safe in init()
+            self.sma = self.I(SMA, self.data.Close, 20)
+
+        def next(self):
+            # self.data.Close[-1] is the most recent bar
+            # self.sma[-1] is the SMA at the current bar
+            # Anything beyond [-1] is in the future and not accessible
+            if self.data.Close[-1] > self.sma[-1]:
+                self.buy()
+    ```
+
+    Never compute indicators directly in `next()` using the full `self.data.df` — that exposes future values. Always use `self.I()` in `init()`.
+  </Accordion>
+
+  <Accordion title="Can I use multiple time frames?">
+    Yes. Use `backtesting.lib.resample_apply()` to compute an indicator on a higher time frame and align it back to the base data.
+
+    ```python
+    from backtesting import Strategy
+    from backtesting.lib import resample_apply
+
+    class MultiTfStrategy(Strategy):
+        def init(self):
+            # Compute SMA on weekly bars, aligned to daily data
+            self.weekly_sma = self.I(
+                resample_apply,
+                'W',       # resample rule
+                SMA,       # function to apply on resampled data
+                self.data.Close,
+                20,
+                plot=True,
+            )
+
+        def next(self):
+            if self.data.Close[-1] > self.weekly_sma[-1]:
+                self.buy()
+    ```
+
+    The resampled indicator is forward-filled so it has the same length as the base series and is accessible in `next()` without look-ahead bias.
+  </Accordion>
+
+  <Accordion title="How does commission work?">
+    Starting in **version 0.6.0**, commission is applied **at both entry and exit**. This means a round-trip trade incurs the commission cost twice.
+
+    ```python
+    # 0.2% commission means:
+    #   Entry:  commission = price * size * 0.002
+    #   Exit:   commission = price * size * 0.002
+    bt = Backtest(data, MyStrategy, commission=0.002)
+    ```
+
+    Total commissions paid are reported in `stats['Commissions [$]']` and per-trade in the `Commission` column of `stats._trades`.
+
+    If you want to model a **spread** (cost applied only once at entry), use the `spread=` parameter:
+
+    ```python
+    bt = Backtest(data, MyStrategy, spread=0.0001)  # 1 pip spread at entry only
+    ```
+  </Accordion>
+
+  <Accordion title="Why is my optimization slow?">
+    A few techniques can dramatically speed up `Backtest.optimize()`:
+
+    **Use ranges instead of explicit lists** to reduce the parameter space:
+
+    ```python
+    # Slow — tests 100 discrete values
+    stats = bt.optimize(n=list(range(1, 101)))
+
+    # Fast — backtesting.py samples efficiently from the range
+    stats = bt.optimize(n=range(1, 101))
+    ```
+
+    **Limit tries with `max_tries=`:**
+
+    ```python
+    stats = bt.optimize(n=range(1, 200), m=range(1, 200), max_tries=500)
+    ```
+
+    **Use model-based (SAMBO) optimization** for large search spaces:
+
+    ```python
+    stats = bt.optimize(n=range(1, 200), method='sambo')
+    ```
+
+    Optimization runs in parallel by default using `joblib`. On Windows, make sure your script has a `if __name__ == '__main__':` guard to avoid multiprocessing issues:
+
+    ```python
+    if __name__ == '__main__':
+        stats = bt.optimize(n=range(5, 50))
+    ```
+  </Accordion>
+
+  <Accordion title="How do I use stop-loss and take-profit?">
+    Pass `sl=` (stop-loss) and `tp=` (take-profit) directly in `buy()` or `sell()`. Both are **price levels**, not distances.
+
+    ```python
+    def next(self):
+        price = self.data.Close[-1]
+        self.buy(
+            sl=price * 0.98,   # 2% below entry
+            tp=price * 1.05,   # 5% above entry
+        )
+    ```
+
+    You can also set or update them on an existing trade:
+
+    ```python
+    def next(self):
+        for trade in self.trades:
+            # Trail the stop-loss as price moves in your favor
+            trade.sl = max(trade.sl or 0, self.data.Close[-1] * 0.97)
+    ```
+
+    <Note>
+      When both SL and TP are hit in the same bar, the stop-loss always executes first (as of version 0.6.3).
+    </Note>
+  </Accordion>
+
+  <Accordion title="Does backtesting.py support short selling?">
+    Yes. Call `self.sell()` to open a short position. The full Order/Trade/Position API applies equally to short trades.
+
+    ```python
+    class ShortStrategy(Strategy):
+        def next(self):
+            if some_bearish_signal:
+                self.sell()           # Opens a short
+            elif self.position.is_short:
+                self.position.close() # Closes the short
+    ```
+
+    Short positions show negative `size` in `stats._trades`. P&L is calculated correctly for both long and short sides.
+  </Accordion>
+
+  <Accordion title="What does exclusive_orders=True do?">
+    When `exclusive_orders=True`, placing a new buy or sell order **automatically closes any open trade** in the opposite direction before filling the new order. This simplifies trend-following strategies that should never hold both long and short simultaneously.
+
+    ```python
+    bt = Backtest(data, SmaCross, exclusive_orders=True)
+    ```
+
+    With this setting, calling `self.buy()` when a short trade is open will close the short and open a long in one step. This matches the behavior of many live trading platforms.
+
+    Without `exclusive_orders=True`, you must manage closing existing trades manually before opening new ones in the opposite direction.
+  </Accordion>
+
+  <Accordion title="How do I save the plot without opening a browser?">
+    Pass `open_browser=False` to `Backtest.plot()`. You can also specify a custom output file path with `filename=`.
+
+    ```python
+    # Save to a file without opening a browser tab
+    bt.plot(open_browser=False)
+
+    # Save to a specific path
+    bt.plot(filename='output/my_backtest.html', open_browser=False)
+    ```
+
+    The output is a self-contained HTML file with the interactive Bokeh chart. This is useful in headless environments, CI pipelines, or when generating reports programmatically.
+  </Accordion>
+
+  <Accordion title="What does hedging=True do?">
+    By default, backtesting.py closes trades in FIFO (first-in, first-out) order. Setting `hedging=True` disables this behavior and allows **simultaneous long and short positions**.
+
+    ```python
+    bt = Backtest(data, MyStrategy, hedging=True)
+    ```
+
+    With hedging enabled, opening a short does not automatically offset an existing long. Both positions are tracked independently, which is useful for strategies that genuinely hold opposing positions at the same time.
+
+    <Note>
+      `hedging=True` and `exclusive_orders=True` are mutually exclusive — enable only one at a time.
+    </Note>
+  </Accordion>
+
+  <Accordion title="What's the difference between spread and commission?">
+    They model different real-world costs:
+
+    | Parameter | Applied at | Typical use |
+    |-----------|------------|-------------|
+    | `spread=` | Entry only | Bid-ask spread, slippage |
+    | `commission=` | Entry **and** exit | Broker fee, exchange fee |
+
+    ```python
+    bt = Backtest(
+        data,
+        MyStrategy,
+        spread=0.0001,    # 1 pip spread at entry
+        commission=0.001, # 0.1% broker fee at both entry and exit
+    )
+    ```
+
+    Use `spread=` for costs that are embedded in the price (you "pay" by crossing the spread), and `commission=` for explicit fees charged per trade by your broker.
+  </Accordion>
+
+</AccordionGroup>
