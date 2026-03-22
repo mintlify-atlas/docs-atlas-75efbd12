@@ -255,9 +255,21 @@ Recomputes strategy performance metrics, optionally on a subset of trades. Usefu
 </ResponseField>
 
 ```python
-from backtesting import Backtest
-from backtesting.lib import compute_stats
-from backtesting.test import GOOG, SmaCross
+from backtesting import Backtest, Strategy
+from backtesting.lib import compute_stats, crossover
+from backtesting.test import GOOG, SMA
+
+class SmaCross(Strategy):
+    n1 = 10
+    n2 = 20
+    def init(self):
+        self.ma1 = self.I(SMA, self.data.Close, self.n1)
+        self.ma2 = self.I(SMA, self.data.Close, self.n2)
+    def next(self):
+        if crossover(self.ma1, self.ma2):
+            self.buy()
+        elif crossover(self.ma2, self.ma1):
+            self.sell()
 
 stats = Backtest(GOOG, SmaCross).run()
 
@@ -315,9 +327,21 @@ Plots an interactive grid of 2D heatmaps, one for every pair of parameters in `h
 </ParamField>
 
 ```python
-from backtesting import Backtest
-from backtesting.lib import plot_heatmaps
-from backtesting.test import GOOG, SmaCross
+from backtesting import Backtest, Strategy
+from backtesting.lib import plot_heatmaps, crossover
+from backtesting.test import GOOG, SMA
+
+class SmaCross(Strategy):
+    n1 = 10
+    n2 = 20
+    def init(self):
+        self.ma1 = self.I(SMA, self.data.Close, self.n1)
+        self.ma2 = self.I(SMA, self.data.Close, self.n2)
+    def next(self):
+        if crossover(self.ma1, self.ma2):
+            self.buy()
+        elif crossover(self.ma2, self.ma1):
+            self.sell()
 
 bt = Backtest(GOOG, SmaCross)
 best_stats, heatmap = bt.optimize(
@@ -365,9 +389,21 @@ Useful for Monte Carlo simulations, robustness testing, and significance testing
 </ResponseField>
 
 ```python
-from backtesting import Backtest
-from backtesting.lib import random_ohlc_data
-from backtesting.test import EURUSD, SmaCross
+from backtesting import Backtest, Strategy
+from backtesting.lib import random_ohlc_data, crossover
+from backtesting.test import EURUSD, SMA
+
+class SmaCross(Strategy):
+    n1 = 10
+    n2 = 20
+    def init(self):
+        self.ma1 = self.I(SMA, self.data.Close, self.n1)
+        self.ma2 = self.I(SMA, self.data.Close, self.n2)
+    def next(self):
+        if crossover(self.ma1, self.ma2):
+            self.buy()
+        elif crossover(self.ma2, self.ma1):
+            self.sell()
 
 # Create generator
 ohlc_gen = random_ohlc_data(EURUSD, random_state=42)

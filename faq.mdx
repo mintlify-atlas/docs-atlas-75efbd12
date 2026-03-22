@@ -57,11 +57,11 @@ description: "Answers to the most common questions about backtesting.py — data
     bt = Backtest(data, MyStrategy, commission=(1.0, 0.0005))  # $1 + 0.05% per side
     ```
 
-    **Callable:** A function that receives `(price, size)` and returns the total commission for that fill.
+    **Callable:** A function that receives `(order_size: int, price: float)` and returns the commission in cash units. `order_size` is negative for short orders.
 
     ```python
-    def my_commission(price, size):
-        return max(1.0, abs(size) * price * 0.001)
+    def my_commission(order_size, price):
+        return max(1.0, abs(order_size) * price * 0.001)
 
     bt = Backtest(data, MyStrategy, commission=my_commission)
     ```
@@ -130,23 +130,21 @@ description: "Answers to the most common questions about backtesting.py — data
   </Accordion>
 
   <Accordion title="Can I use multiple time frames?">
-    Yes. Use `backtesting.lib.resample_apply()` to compute an indicator on a higher time frame and align it back to the base data.
+    Yes. Use `backtesting.lib.resample_apply()` to compute an indicator on a higher time frame and align it back to the base data. Call it directly inside `init()` — when called from within a `Strategy.init()`, it automatically wraps the result in `self.I()`.
 
     ```python
     from backtesting import Strategy
     from backtesting.lib import resample_apply
 
+    def SMA(series, n):
+        import pandas as pd
+        return pd.Series(series).rolling(n).mean()
+
     class MultiTfStrategy(Strategy):
         def init(self):
-            # Compute SMA on weekly bars, aligned to daily data
-            self.weekly_sma = self.I(
-                resample_apply,
-                'W',       # resample rule
-                SMA,       # function to apply on resampled data
-                self.data.Close,
-                20,
-                plot=True,
-            )
+            # Compute SMA on weekly bars, aligned to daily data.
+            # resample_apply() auto-wraps result in self.I() when called from init().
+            self.weekly_sma = resample_apply('W', SMA, self.data.Close, 20)
 
         def next(self):
             if self.data.Close[-1] > self.weekly_sma[-1]:
@@ -200,7 +198,7 @@ description: "Answers to the most common questions about backtesting.py — data
     stats = bt.optimize(n=range(1, 200), method='sambo')
     ```
 
-    Optimization runs in parallel by default using `joblib`. On Windows, make sure your script has a `if __name__ == '__main__':` guard to avoid multiprocessing issues:
+    Grid optimization runs in parallel by default using Python's `multiprocessing` pool. On Windows, make sure your script has a `if __name__ == '__main__':` guard to avoid multiprocessing issues:
 
     ```python
     if __name__ == '__main__':

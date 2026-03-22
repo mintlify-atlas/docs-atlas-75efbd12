@@ -123,6 +123,19 @@ You do not need to install any of these to use backtesting.py itself.
   Bokeh versions 3.0.x and 3.2.x are explicitly excluded due to known incompatibilities. If you see Bokeh-related errors after install, run `pip install "bokeh>=3.1,!=3.2.*"` to force a compatible version.
 </Warning>
 
+## Controlling Bokeh output mode
+
+By default, backtesting.py auto-detects whether it is running inside a Jupyter notebook and configures Bokeh output accordingly. You can override this with `set_bokeh_output`:
+
+```python
+from backtesting import set_bokeh_output
+
+set_bokeh_output(notebook=True)   # force inline notebook output
+set_bokeh_output(notebook=False)  # force file/browser output
+```
+
+This is useful when the auto-detection does not match your environment, for example in JupyterLab or VS Code notebooks where the detection heuristic may produce unexpected results.
+
 ## Next steps
 
 Once installed, follow the [quickstart guide](/quickstart) to run your first backtest in a few lines of code.

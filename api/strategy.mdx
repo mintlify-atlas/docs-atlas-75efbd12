@@ -362,8 +362,7 @@ class BracketStrategy(Strategy):
         elif crossover(self.sma, self.data.Close) and self.position.is_long:
             self.position.close()
 
-    def on_bar_close(self):
-        # Adjust trailing stop on active trades
+        # Update trailing stop on active trades each bar
         for trade in self.trades:
             new_sl = self.data.Close[-1] - 2 * self.atr[-1]
             if new_sl > (trade.sl or 0):

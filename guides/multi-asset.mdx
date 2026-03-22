@@ -24,17 +24,36 @@ btm = MultiBacktest(df_list, strategy_cls, **kwargs)
 `MultiBacktest.run(**kwargs)` returns a `pd.DataFrame` where each column corresponds to one instrument (indexed 0, 1, 2, …) and each row is a stats key:
 
 ```python
-from backtesting.lib import MultiBacktest
-from backtesting.test import EURUSD, BTCUSD, SmaCross
+from backtesting import Strategy
+from backtesting.lib import MultiBacktest, crossover
+from backtesting.test import EURUSD, BTCUSD
+
+def SMA(series, n):
+    import pandas as pd
+    return pd.Series(series).rolling(n).mean().values
+
+class SmaCross(Strategy):
+    n1 = 10
+    n2 = 20
+
+    def init(self):
+        self.sma1 = self.I(SMA, self.data.Close, self.n1)
+        self.sma2 = self.I(SMA, self.data.Close, self.n2)
+
+    def next(self):
+        if crossover(self.sma1, self.sma2):
+            self.buy()
+        elif crossover(self.sma2, self.sma1):
+            self.position.close()
 
 btm = MultiBacktest([EURUSD, BTCUSD], SmaCross, cash=10_000, commission=.002)
 
 # Returns pd.DataFrame: rows = stat keys, columns = instrument index
-stats_df = btm.run(fast=10, slow=20)
+stats_df = btm.run(n1=10, n2=20)
 print(stats_df)
 ```
 
-Keyword arguments to `run()` are forwarded to `Strategy` as parameter overrides — equivalent to calling `bt.run(fast=10, slow=20)` on each instrument individually.
+Keyword arguments to `run()` are forwarded to `Strategy` as parameter overrides — equivalent to calling `bt.run(n1=10, n2=20)` on each instrument individually.
 
 ## Parallel execution
 
