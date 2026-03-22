@@ -1,0 +1,129 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Backtesting.py",
+  "projectDescription": "A Python framework for backtesting trading strategies on historical OHLCV data with built-in optimization, interactive visualizations, and detailed performance statistics.",
+  "theme": "sequoia",
+  "primaryColor": "#1a7f4b",
+  "lightColor": "#e6f4ed",
+  "darkColor": "#0d3d24",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/strategy",
+              "concepts/backtest",
+              "concepts/data",
+              "concepts/orders-trades-positions"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/indicators",
+              "guides/optimization",
+              "guides/multiple-timeframes",
+              "guides/machine-learning",
+              "guides/fractional-trading",
+              "guides/multi-asset"
+            ]
+          },
+          {
+            "group": "Resources",
+            "pages": [
+              "changelog",
+              "faq"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core",
+            "pages": [
+              "api/backtest",
+              "api/strategy"
+            ]
+          },
+          {
+            "group": "Data Structures",
+            "pages": [
+              "api/order",
+              "api/trade",
+              "api/position"
+            ]
+          },
+          {
+            "group": "Library",
+            "pages": [
+              "api/lib/utilities",
+              "api/lib/composable-strategies"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Simple, well-documented Strategy and Backtest API",
+    "Blazing fast execution via NumPy vectorization",
+    "Built-in parameter optimizer with grid and sambo-based search",
+    "Interactive Bokeh-powered visualizations with equity curves and trade markers",
+    "Support for stop-loss, take-profit, limit, and stop-limit orders",
+    "Multiple time frame analysis with resample_apply",
+    "Indicator-library-agnostic (works with TA-Lib, pandas-ta, etc.)",
+    "Composable base strategies: SignalStrategy, TrailingStrategy",
+    "Fractional share and cryptocurrency trading via FractionalBacktest",
+    "Multi-asset parallel backtesting with MultiBacktest",
+    "Detailed performance metrics: Sharpe, Sortino, Calmar, SQN, Kelly, CAGR, drawdown"
+  ],
+  "publicApiSurface": [
+    "Backtest(data, strategy, cash, commission, spread, margin, trade_on_close, hedging, exclusive_orders, finalize_trades)",
+    "Backtest.run(**kwargs) -> pd.Series",
+    "Backtest.optimize(**kwargs) -> pd.Series",
+    "Backtest.plot()",
+    "Strategy.init()",
+    "Strategy.next()",
+    "Strategy.I(func, *args, name, plot, overlay, color, scatter)",
+    "Strategy.buy(size, limit, stop, sl, tp, tag)",
+    "Strategy.sell(size, limit, stop, sl, tp, tag)",
+    "Strategy.data",
+    "Strategy.position",
+    "Strategy.orders",
+    "Strategy.trades",
+    "Strategy.closed_trades",
+    "Strategy.equity",
+    "Order.cancel()",
+    "Trade.close(portion)",
+    "Trade.sl",
+    "Trade.tp",
+    "Position.close(portion)",
+    "lib.crossover(series1, series2)",
+    "lib.cross(series1, series2)",
+    "lib.barssince(condition)",
+    "lib.quantile(series, quantile)",
+    "lib.resample_apply(rule, func, series)",
+    "lib.plot_heatmaps(heatmap)",
+    "lib.compute_stats(stats, data, trades, risk_free_rate)",
+    "lib.random_ohlc_data(example_data, frac, random_state)",
+    "lib.SignalStrategy",
+    "lib.TrailingStrategy",
+    "lib.FractionalBacktest",
+    "lib.MultiBacktest",
+    "lib.OHLCV_AGG",
+    "lib.TRADES_AGG"
+  ]
+}
