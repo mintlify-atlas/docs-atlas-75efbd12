@@ -1,9 +1,9 @@
 ---
-title: Introduction
-description: Backtesting.py is a Python framework for backtesting trading strategies on historical candlestick data.
+title: "Introduction"
+description: "Backtesting.py is a Python framework for backtesting trading strategies on historical candlestick data."
 ---
 
-Backtesting.py is a fast, lightweight Python framework for testing trading strategies against historical market data. It gives you a clean, minimal API to define a strategy, run a simulation, inspect detailed statistics, and explore interactive charts — all without locking you into a particular data provider or indicator library.
+[Backtesting.py](https://kernc.github.io/backtesting.py/doc/backtesting/) is a fast, lightweight Python framework for testing trading strategies against historical market data. It gives you a clean, minimal API to define a strategy, run a simulation, inspect detailed statistics, and explore interactive charts — all without locking you into a particular data provider or indicator library.
 
 ## What it is
 
@@ -14,7 +14,7 @@ The library is indicator-library-agnostic: you can use NumPy, pandas, TA-Lib, Tu
 ## Core concepts
 
 | Concept | Description |
-|---|---|
+| --- | --- |
 | `Strategy` | Abstract base class. Subclass it and implement `init()` and `next()`. |
 | `Backtest` | Engine that runs the simulation. Accepts a data DataFrame and a Strategy class. |
 | `data` | A pandas DataFrame with `Open`, `High`, `Low`, `Close`, and (optionally) `Volume` columns, indexed by datetime. |
@@ -28,24 +28,31 @@ The library is indicator-library-agnostic: you can use NumPy, pandas, TA-Lib, Tu
   <Card title="Simple API" icon="code">
     Two methods to implement (`init` and `next`), two objects to use (`Backtest` and `Strategy`). The entire public surface fits on a single page.
   </Card>
+
   <Card title="Blazing fast execution" icon="bolt">
     The simulation loop is written to minimise Python overhead. Vectorised indicator computation happens before the loop; only order logic runs bar-by-bar.
   </Card>
+
   <Card title="Built-in optimizer" icon="sliders">
     `bt.optimize()` performs grid search or sambo-based Bayesian optimisation over any strategy parameter, with parallel execution and heatmap visualisation.
   </Card>
+
   <Card title="Interactive visualizations" icon="chart-line">
     `bt.plot()` produces a fully interactive Bokeh chart: zoom, pan, toggle indicators, inspect individual trades, and view the equity curve.
   </Card>
+
   <Card title="Detailed statistics" icon="table">
-    Every run returns 30+ metrics including Sharpe ratio, Sortino ratio, Calmar ratio, max drawdown, win rate, profit factor, SQN, Kelly criterion, alpha, and beta.
+    Every run returns 30\+ metrics including Sharpe ratio, Sortino ratio, Calmar ratio, max drawdown, win rate, profit factor, SQN, Kelly criterion, alpha, and beta.
   </Card>
+
   <Card title="Indicator-library-agnostic" icon="puzzle">
     Works with TA-Lib, Tulipy, pandas-ta, NumPy, scikit-learn, or any function that returns a NumPy array aligned to your data.
   </Card>
+
   <Card title="Any instrument" icon="globe">
     Supports equities, ETFs, futures, forex, crypto, bonds — any asset that produces OHLCV candlestick data.
   </Card>
+
   <Card title="Composable base strategies" icon="layers">
     `backtesting.lib` ships reusable building blocks: `SignalStrategy`, `TrailingStrategy`, `FractionalBacktest`, `MultiBacktest`, and helper utilities.
   </Card>
@@ -67,6 +74,7 @@ The library is deliberately small. It does not include a live-trading engine, a 
   <Card title="Quickstart" icon="rocket" href="/quickstart">
     Run your first backtest in under five minutes using the built-in Google stock dataset.
   </Card>
+
   <Card title="Installation" icon="download" href="/installation">
     Install backtesting.py and verify your environment is set up correctly.
   </Card>
